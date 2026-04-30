@@ -218,6 +218,7 @@ async def _handle_envelope(env: dict) -> dict:
     global _running, _waiting, _last_activity_ts, _dizzy_until
     global _session_active, _current_prompt, _current_running_msg
     global _approval_in_progress, _decision_value, _completed_until
+    global _completed_inferred_for_ts
 
     event = env.get("event") or {}
     kind = event.get("kind", "")
@@ -258,10 +259,15 @@ async def _handle_envelope(env: dict) -> dict:
         _waiting = max(0, _waiting - 1)
         _approval_in_progress = False
         _current_prompt = None
+        # 刷新到 wait 之后的真实时间, 防 quiet 立刻满足 (codex P2 bug 2)
+        # 不能用 path 顶部的 now —— wait_for 可能已经过了 30s
+        _last_activity_ts = time.time()
         if decision == "once":
             _running += 1   # 视为 tool_start 真正开始
             _current_running_msg = f"{tool}: {summary[:40]}" if summary else tool
-        _last_activity_ts = now
+        else:
+            # deny / timeout: 不让 pusher 把它当 task_complete 候选
+            _completed_inferred_for_ts = _last_activity_ts
         _mark_dirty()
         await _send(_to_device_wire())  # 立即推, 别等 throttle
         return {"decision": decision}
@@ -278,7 +284,9 @@ async def _handle_envelope(env: dict) -> dict:
         _running = max(0, _running - 1)
         _last_activity_ts = now
         _dizzy_until = now + DIZZY_HOLD_S
-        _completed_until = 0.0  # 不要让 CELEBRATE 盖到 error 上
+        _completed_until = 0.0
+        # 锁 inference guard, 防 dizzy 过期后 quiet 4s 又推 task_complete (codex P2 bug 1)
+        _completed_inferred_for_ts = _last_activity_ts
         if _running == 0:
             _current_running_msg = ""
         _mark_dirty()
@@ -303,9 +311,11 @@ async def _handle_envelope(env: dict) -> dict:
         _running = 0
         _waiting = 0
         _dizzy_until = now + DIZZY_HOLD_S
-        _completed_until = 0.0  # 不要让 CELEBRATE 盖到 error 上
+        _completed_until = 0.0
         _current_running_msg = ""
         _last_activity_ts = now
+        # 锁 inference guard, 防 dizzy 过期后 quiet 4s 又推 task_complete (codex P2 bug 1)
+        _completed_inferred_for_ts = _last_activity_ts
         _mark_dirty()
         return {"ok": True}
 
