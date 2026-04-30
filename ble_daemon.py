@@ -54,6 +54,7 @@ _waiting = 0
 _dirty = False
 _last_activity_ts = 0.0
 _completed_until = 0.0       # > now → completed=True
+_completed_inferred_for_ts = 0.0  # one-shot guard: 已为这个 _last_activity_ts 推过 task_complete
 _dizzy_until = 0.0           # > now → msg="error"
 _session_active = False
 _current_prompt: Optional[dict] = None
@@ -178,23 +179,23 @@ def _mark_dirty():
 # ── 5Hz 推送 task ──────────────────────────────────────
 async def _pusher_task():
     """5Hz 节流: dirty 才推, 同时跑 task_complete 推断。"""
-    global _dirty, _completed_until
+    global _dirty, _completed_until, _completed_inferred_for_ts
     last_pushed_wire = None
     while True:
         await asyncio.sleep(PUSH_INTERVAL_S)
 
-        # task_complete 推断: 静默期 + 之前有过活动
+        # task_complete 推断: 静默期 + 之前有过活动 + 还没为这个 _last_activity_ts 推过
         now = time.time()
         if (
             _running == 0
             and _waiting == 0
             and _last_activity_ts > 0
             and now - _last_activity_ts > TASK_COMPLETE_QUIET_S
-            and _completed_until < now      # 上一次 completed 已过期, 不重复触发
+            and _completed_inferred_for_ts != _last_activity_ts  # one-shot 关键
             and _dizzy_until < now           # 错误状态不要被 completed 盖
         ):
-            # 触发一次 completed pulse
             _completed_until = now + COMPLETED_HOLD_S
+            _completed_inferred_for_ts = _last_activity_ts  # 锁住, 同一活动期不再重复推
             _mark_dirty()
             print(f"[infer] task_complete (quiet={now - _last_activity_ts:.1f}s)")
 
@@ -242,12 +243,17 @@ async def _handle_envelope(env: dict) -> dict:
         _decision_value = None
         # approval 绕过 5Hz 立刻推, 否则用户要等 200ms 看 LED
         await _send(_to_device_wire())
-        try:
-            await asyncio.wait_for(_decision_event.wait(), timeout=APPROVAL_TIMEOUT_S)
-            decision = _decision_value or "deny"
-        except asyncio.TimeoutError:
-            print("[approval] timeout → deny")
-            decision = "deny"
+        if _stub:
+            # stub 模式无真设备,自动 once,免锁 Claude Code 30s
+            print("[approval] stub mode → auto-once")
+            decision = "once"
+        else:
+            try:
+                await asyncio.wait_for(_decision_event.wait(), timeout=APPROVAL_TIMEOUT_S)
+                decision = _decision_value or "deny"
+            except asyncio.TimeoutError:
+                print("[approval] timeout → deny")
+                decision = "deny"
         # 清 approval 状态
         _waiting = max(0, _waiting - 1)
         _approval_in_progress = False
