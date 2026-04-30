@@ -1,0 +1,18 @@
+{
+  "session_id": "SESSION-FIXTURE-0001",
+  "transcript_path": "C:\\Users\\user\\.claude\\projects\\C--Users-user-Desktop-claudehardware\\SESSION-FIXTURE-0001.jsonl",
+  "cwd": "C:\\Users\\user\\Desktop\\claudehardware\\MicroPython_Claude_Assistant",
+  "permission_mode": "auto",
+  "hook_event_name": "PostToolBatch",
+  "tool_calls": [
+    {
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "cd \"C:/Users/user/Desktop/claudehardware/MicroPython_Claude_Assistant/\" && gh pr list --head feat-T0-hook-receive-layer --state all --json number,title,state,baseRefName,url 2>&1 | head -50",
+        "description": "Check if PR already exists"
+      },
+      "tool_use_id": "toolu_FIXTURE0001",
+      "tool_response": "/usr/bin/bash: line 1: gh: command not found"
+    }
+  ]
+}

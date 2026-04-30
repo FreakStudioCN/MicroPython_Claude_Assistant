@@ -1,22 +1,70 @@
 #!/usr/bin/env python3
-# ble_daemon.py —— 长驻 BLE 桥接守护进程
-# 启动方式：python ble_daemon.py
+# ble_daemon.py —— 长驻 BLE 桥接守护进程 (v2)
+#
+# 输入: hook_bridge.py 通过 TCP 57320 推 v2 envelope
+#       {type:"event", v:2, event:{kind, ...}, generic:{...}}
+# 输出: 翻译为 protocol.py v1 设备 wire (running/waiting/completed/msg/tokens/prompt)
+#       通过 BLE NUS 写到 ESP32, 6 字段严格,设备 firmware 不动
+#
+# 状态机:
+#   tool_start → running++  / 或 waiting++ (approval) 阻塞等设备回 once|deny
+#   tool_done  → running--, mark last_activity
+#   tool_error / task_error → running--, msg="error", _dizzy_until 短暂
+#   tool_batch_done → soft task_complete 候选信号
+#   user_prompt → 标记 session_active, 清 idle, 清 completed
+#   subagent_start / notification → 仅信息, 不改状态
+#
+# 推断兜底 (Stage 1 发现 Stop hook 不冒,只能从沉默期推):
+#   running==0 and waiting==0 and now-last_activity > TASK_COMPLETE_QUIET_S
+#     → completed=True 短暂 (CELEBRATE 触发后清掉)
+#   now-last_activity > IDLE_QUIET_S → 设备进 IDLE 状态由 base 自动覆盖
+#
+# 5Hz 节流: 状态变化只标 dirty, 单独 _pusher_task 每 200ms 推一次
+#           approval 路径绕过节流同步推 (不能让用户等)
+#
+# stub 模式: --stub 不启 BLE,_send 改 stdout 打印,用于无设备 e2e 测试
 
+import argparse
 import asyncio
 import json
+import sys
 import time
-from bleak import BleakClient, BleakScanner
 from typing import Optional
 
 HOST = "127.0.0.1"
 PORT = 57320
+
+# BLE 常量
 NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 DEVICE_NAME_PREFIX = "Claude"
-APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
-APPROVAL_TIMEOUT = 30
 
-_client: Optional[BleakClient] = None
+# 业务常量
+APPROVAL_TIMEOUT_S = 30
+PUSH_INTERVAL_S = 0.2          # 5Hz throttle
+TASK_COMPLETE_QUIET_S = 4.0    # PostTool 后 N 秒无新 PreTool → 推断 task_complete
+COMPLETED_HOLD_S = 2.0         # completed=True 持续秒数 (覆盖 CELEBRATE 3s)
+DIZZY_HOLD_S = 3.0             # tool_error / task_error msg="error" 持续秒数
+
+# 设备 wire msg 字段值 (设备 firmware 可能 startswith 匹配 / 等值检查,改这些前先核对 state.py)
+MSG_ERROR = "error"
+MSG_COMPLETED = "completed"
+APPROVE_PREFIX = "approve: "
+
+# ── 全局状态 ───────────────────────────────────────────
+_stub = False  # --stub 模式
+_running = 0
+_waiting = 0
+_dirty = False
+_last_activity_ts = 0.0
+_completed_until = 0.0       # > now → completed=True
+_completed_inferred_for_ts = 0.0  # one-shot guard: 已为这个 _last_activity_ts 推过 task_complete
+_dizzy_until = 0.0           # > now → msg="error"
+_current_prompt: Optional[dict] = None
+_current_running_msg = ""    # 显示在设备上的"running ..."文字
+
+# BLE 连接
+_client = None
 _connected = False
 _decision_event = asyncio.Event()
 _decision_value: Optional[str] = None
@@ -25,13 +73,15 @@ _lock = asyncio.Lock()
 _approval_in_progress = False
 
 
-def _on_disconnect(client: BleakClient):
+# ── BLE 层 ─────────────────────────────────────────────
+def _on_disconnect(client):
     global _connected
     _connected = False
     print("[daemon] disconnected, will reconnect...")
 
 
 def _on_notify(sender, data: bytearray):
+    """设备 → PC: 接 {cmd:"permission", id, decision:"once|deny"} 解 approval。"""
     global _decision_value, _rx_buf
     _rx_buf += data.decode(errors="ignore")
     while "\n" in _rx_buf:
@@ -49,15 +99,20 @@ def _on_notify(sender, data: bytearray):
 
 
 async def _connect_loop():
-    """后台持续维护 BLE 连接，断线后自动重连。"""
     global _client, _connected
+    if _stub:
+        return
+    from bleak import BleakClient, BleakScanner
     while True:
         if _connected:
             await asyncio.sleep(1)
             continue
         try:
             devices = await BleakScanner.discover(timeout=5.0)
-            addr = next((d.address for d in devices if d.name and d.name.startswith(DEVICE_NAME_PREFIX)), None)
+            addr = next(
+                (d.address for d in devices if d.name and d.name.startswith(DEVICE_NAME_PREFIX)),
+                None,
+            )
             if not addr:
                 print("[daemon] device not found, retrying...")
                 await asyncio.sleep(3)
@@ -76,81 +131,233 @@ async def _connect_loop():
 
 
 async def _send(payload: dict):
+    """v1 设备 wire 严格按 protocol.py: running/waiting/completed/msg/tokens/prompt。
+    payload 仅这 6 字段; 多余字段会被设备 StatusMsg 忽略但浪费 BLE 带宽。"""
+    if _stub:
+        print(f"[stub-send] t={time.time():.3f} {json.dumps(payload, ensure_ascii=False)}")
+        return
     if not _connected or _client is None:
         print(f"[send] skipped (not connected): {payload}")
         return
     data = (json.dumps(payload) + "\n").encode()
-    chunks = (len(data) + 19) // 20
-    print(f"[send] t={time.time():.3f} {payload} ({len(data)}B, {chunks} chunks)")
+    print(f"[send] t={time.time():.3f} {payload} ({len(data)}B)")
     for i in range(0, len(data), 20):
-        chunk = data[i:i+20]
-        print(f"[send] chunk {i//20}/{chunks} t={time.time():.3f}: {chunk}")
-        await _client.write_gatt_char(NUS_RX, chunk, response=False)
-    print(f"[send] done t={time.time():.3f}")
+        await _client.write_gatt_char(NUS_RX, data[i:i+20], response=False)
 
 
-async def _handle_request(req: dict) -> dict:
-    global _decision_value
-    t = req.get("type")
-    print(f"[req] {req}")
+# ── 状态翻译: 内部 v2 状态 → v1 设备 wire ──────────────
+def _build_msg() -> str:
+    """msg 字段优先级: approval > error > completed > running > 默认空 (设备显 IDLE)。"""
+    if _waiting > 0 and _current_prompt:
+        return APPROVE_PREFIX + _current_prompt.get("tool", "")
+    now = time.time()
+    if _dizzy_until > now:
+        return MSG_ERROR
+    if _completed_until > now:
+        return MSG_COMPLETED
+    if _running > 0 and _current_running_msg:
+        return _current_running_msg
+    if _running > 0:
+        return "running"
+    return ""
 
-    if t == "pre":
-        tool = req.get("tool", "")
-        hint = req.get("hint", "")
-        if tool not in APPROVAL_TOOLS:
-            msg = f"{tool}: {hint[:40]}" if hint else f"running: {tool}"
-            print(f"[pre] non-approval tool={tool!r}, sending running")
-            await _send({"running": 1, "msg": msg})
+
+def _to_device_wire() -> dict:
+    """严格按 protocol.py v1 schema, 6 字段。"""
+    return {
+        "running":   _running,
+        "waiting":   _waiting,
+        "completed": _completed_until > time.time(),
+        "msg":       _build_msg(),
+        "tokens":    0,  # TODO: 下个 PR 从 tool_response 抽
+        "prompt":    _current_prompt,
+    }
+
+
+def _mark_dirty():
+    global _dirty
+    _dirty = True
+
+
+def _enter_error_state(now: float, hard_reset: bool) -> None:
+    """tool_error / task_error 共同状态推进。
+    hard_reset=False (tool_error): _running--, _running==0 时清 running_msg。
+    hard_reset=True  (task_error): 整个 turn 失败,_running/_waiting 全置 0。
+    inference guard 锁住,避免 dizzy 过期后 quiet 4s 又被推 task_complete。"""
+    global _running, _waiting, _last_activity_ts, _dizzy_until
+    global _completed_until, _completed_inferred_for_ts, _current_running_msg
+    if hard_reset:
+        _running = 0
+        _waiting = 0
+        _current_running_msg = ""
+    else:
+        _running = max(0, _running - 1)
+        if _running == 0:
+            _current_running_msg = ""
+    _dizzy_until = now + DIZZY_HOLD_S
+    _completed_until = 0.0
+    _last_activity_ts = now
+    _completed_inferred_for_ts = _last_activity_ts
+    _mark_dirty()
+
+
+# ── 5Hz 推送 task ──────────────────────────────────────
+async def _pusher_tick(last_pushed_wire):
+    """单次 pusher 迭代逻辑, 返回更新后的 last_pushed_wire。
+    抽出来方便单测 (mock time.time + 直接 await 这个函数)。"""
+    global _dirty, _completed_until, _completed_inferred_for_ts
+
+    # task_complete 推断: 静默期 + 之前有过活动 + 还没为这个 _last_activity_ts 推过
+    now = time.time()
+    if (
+        _running == 0
+        and _waiting == 0
+        and _last_activity_ts > 0
+        and now - _last_activity_ts > TASK_COMPLETE_QUIET_S
+        and _completed_inferred_for_ts != _last_activity_ts  # one-shot 关键
+        and _dizzy_until < now           # 错误状态不要被 completed 盖
+    ):
+        _completed_until = now + COMPLETED_HOLD_S
+        _completed_inferred_for_ts = _last_activity_ts
+        _mark_dirty()
+        print(f"[infer] task_complete (quiet={now - _last_activity_ts:.1f}s)")
+
+    # completed 到期了也是状态变化,标 dirty 让 wire 回归 IDLE
+    if _completed_until > 0 and _completed_until <= now and last_pushed_wire and last_pushed_wire.get("completed"):
+        _mark_dirty()
+
+    if _dirty:
+        wire = _to_device_wire()
+        if wire != last_pushed_wire:  # 同 wire 不重复推, 省 BLE
+            await _send(wire)
+            last_pushed_wire = wire
+        _dirty = False
+    return last_pushed_wire
+
+
+async def _pusher_task():
+    """5Hz 节流: dirty 才推, 同时跑 task_complete 推断。"""
+    last_pushed_wire = None
+    while True:
+        await asyncio.sleep(PUSH_INTERVAL_S)
+        last_pushed_wire = await _pusher_tick(last_pushed_wire)
+
+
+# ── v2 envelope dispatch ───────────────────────────────
+async def _handle_envelope(env: dict) -> dict:
+    """根据 event.kind 改 daemon 状态。返回给 hook_bridge 的 dict。
+    仅 tool_start needs_approval=True 走 approval 同步阻塞 path。"""
+    global _running, _waiting, _last_activity_ts, _dizzy_until
+    global _current_prompt, _current_running_msg
+    global _approval_in_progress, _decision_value, _completed_until
+    global _completed_inferred_for_ts
+
+    event = env.get("event") or {}
+    kind = event.get("kind", "")
+    print(f"[req v2] kind={kind!r} event={event}")
+
+    now = time.time()
+
+    if kind == "tool_start":
+        tool = event.get("tool", "")
+        summary = event.get("summary", "")
+        if not event.get("needs_approval"):
+            _running += 1
+            _last_activity_ts = now
+            _current_running_msg = f"{tool}: {summary[:40]}" if summary else tool
+            _mark_dirty()
             return {"decision": "once"}
-        print(f"[pre] approval needed tool={tool!r} hint={hint!r}")
-        global _approval_in_progress
+
+        # approval path: 同步阻塞等设备
+        _waiting += 1
         _approval_in_progress = True
+        _current_prompt = {"id": "cli-req", "tool": tool, "hint": summary[:80]}
         _decision_event.clear()
         _decision_value = None
-        await _send({
-            "waiting": 1,
-            "msg": f"approve: {tool}",
-            "prompt": {"id": "cli-req", "tool": tool, "hint": hint[:80]}
-        })
-        print(f"[pre] waiting for decision (timeout={APPROVAL_TIMEOUT}s)...")
-        try:
-            await asyncio.wait_for(_decision_event.wait(), timeout=APPROVAL_TIMEOUT)
-        except asyncio.TimeoutError:
-            print("[pre] timeout, defaulting to deny")
-            await _send({"waiting": 0, "running": 0, "msg": "timeout"})
+        # approval 绕过 5Hz 立刻推, 否则用户要等 200ms 看 LED
+        await _send(_to_device_wire())
+        if _stub:
+            # stub 模式无真设备,自动 once,免锁 Claude Code 30s
+            print("[approval] stub mode → auto-once")
+            decision = "once"
+        else:
+            try:
+                await asyncio.wait_for(_decision_event.wait(), timeout=APPROVAL_TIMEOUT_S)
+                decision = _decision_value or "deny"
+            except asyncio.TimeoutError:
+                print("[approval] timeout → deny")
+                decision = "deny"
+        # 清 approval 状态
+        _waiting = max(0, _waiting - 1)
         _approval_in_progress = False
-        print(f"[pre] decision={_decision_value!r}")
-        return {"decision": _decision_value or "deny"}
+        _current_prompt = None
+        # 刷新到 wait 之后的真实时间, 防 quiet 立刻满足 (codex P2 bug 2)
+        # 不能用 path 顶部的 now —— wait_for 可能已经过了 30s
+        _last_activity_ts = time.time()
+        if decision == "once":
+            _running += 1   # 视为 tool_start 真正开始
+            _current_running_msg = f"{tool}: {summary[:40]}" if summary else tool
+        else:
+            # deny / timeout: 不让 pusher 把它当 task_complete 候选
+            _completed_inferred_for_ts = _last_activity_ts
+        _mark_dirty()
+        await _send(_to_device_wire())  # 立即推, 别等 throttle
+        return {"decision": decision}
 
-    elif t == "post":
-        # 等待审批完成后再发送，避免覆盖审批界面
-        while _approval_in_progress:
-            await asyncio.sleep(0.1)
-        success = req.get("success", True)
-        msg = "done" if success else "error"
-        print(f"[post] success={success}")
-        await _send({"running": 0, "msg": msg, "dizzy": not success})
+    if kind == "tool_done":
+        _running = max(0, _running - 1)
+        _last_activity_ts = now
+        if _running == 0:
+            _current_running_msg = ""
+        _mark_dirty()
         return {"ok": True}
 
-    elif t == "stop":
-        print("[stop] task completed")
-        await _send({"running": 0, "completed": True, "msg": "completed"})
+    if kind == "tool_error":
+        _enter_error_state(now, hard_reset=False)
+        return {"ok": True}
+
+    if kind == "tool_batch_done":
+        # 不直接改 running 计数 (PostToolUse 已分别减过), 只刷活动时间
+        _last_activity_ts = now
+        _mark_dirty()
+        return {"ok": True}
+
+    if kind == "user_prompt":
+        _last_activity_ts = now
+        # 清 completed 让设备退出 CELEBRATE, 准备进 BUSY
+        _completed_until = 0.0
+        _mark_dirty()
+        return {"ok": True}
+
+    if kind == "task_error":
+        # StopFailure: API 错 / stream timeout, 整个 turn 算失败
+        _enter_error_state(now, hard_reset=True)
+        return {"ok": True}
+
+    if kind in ("subagent_start", "notification", "unknown"):
+        # 当前阶段仅记录,不改基础状态
         return {"ok": True}
 
     return {"ok": True}
 
 
-async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+# ── TCP server ─────────────────────────────────────────
+MAX_ENVELOPE_BYTES = 64 * 1024  # 远大于实测最大 envelope (~1.5KB),防超大 tool_input 截断
+
+
+async def _handle_client(reader, writer):
     try:
-        data = await asyncio.wait_for(reader.read(4096), timeout=35)
-        req = json.loads(data.decode())
-        # 只在发送 BLE 时加锁，审批等待不持锁
-        t = req.get("type")
-        if t == "pre" and req.get("tool", "") in APPROVAL_TOOLS:
-            resp = await _handle_request(req)
+        # hook_bridge 发完 SHUT_WR, read(N) 会读到 EOF 或 N 字节为止
+        data = await asyncio.wait_for(reader.read(MAX_ENVELOPE_BYTES), timeout=35)
+        env = json.loads(data.decode())
+        # approval path 不持锁 (需长时间等设备); 其它路径串行化
+        kind = (env.get("event") or {}).get("kind")
+        is_approval = kind == "tool_start" and (env.get("event") or {}).get("needs_approval")
+        if is_approval:
+            resp = await _handle_envelope(env)
         else:
             async with _lock:
-                resp = await _handle_request(req)
+                resp = await _handle_envelope(env)
     except Exception as e:
         resp = {"ok": True, "error": str(e)}
     writer.write(json.dumps(resp).encode())
@@ -160,10 +367,23 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
 async def main():
     server = await asyncio.start_server(_handle_client, HOST, PORT)
-    print(f"[daemon] listening on {HOST}:{PORT}")
+    print(f"[daemon] listening on {HOST}:{PORT}  stub={_stub}")
     async with server:
-        await asyncio.gather(server.serve_forever(), _connect_loop())
+        await asyncio.gather(
+            server.serve_forever(),
+            _connect_loop(),
+            _pusher_task(),
+        )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stub", action="store_true",
+                        help="跳过 BLE 连接, _send 改 stdout 打印用于 e2e 测试")
+    args = parser.parse_args()
+    _stub = args.stub
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[daemon] bye")
+        sys.exit(0)

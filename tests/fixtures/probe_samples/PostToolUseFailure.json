@@ -1,0 +1,16 @@
+{
+  "session_id": "SESSION-FIXTURE-0001",
+  "transcript_path": "C:\\Users\\user\\.claude\\projects\\C--Users-user-Desktop-claudehardware\\SESSION-FIXTURE-0001.jsonl",
+  "cwd": "C:\\Users\\user\\Desktop\\claudehardware\\MicroPython_Claude_Assistant",
+  "permission_mode": "auto",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "PowerShell",
+  "tool_input": {
+    "command": "gh pr list --head feat-T0-hook-receive-layer --state all --json number,title,state,baseRefName,url",
+    "description": "Check existing PR via PowerShell"
+  },
+  "tool_use_id": "toolu_FIXTURE0001",
+  "error": "Exit code 1\ngh : The term 'gh' is not recognized as the name of a cmdlet, function, script file, or operable program.\r\n Check the spelling of the name, or if a path was included, verify that the path is correct and try again\r\n.\r\nAt line:1 char:1\r\n+ gh pr list --head feat-T0-hook-receive-layer --state all --json numbe ...\r\n+ ~~\r\n    + CategoryInfo          : ObjectNotFound: (gh:String) [], CommandNotFoundException\r\n    + FullyQualifiedErrorId : CommandNotFoundException",
+  "is_interrupt": false,
+  "duration_ms": 1155
+}
