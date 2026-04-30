@@ -40,12 +40,16 @@ NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 DEVICE_NAME_PREFIX = "Claude"
 
 # 业务常量
-APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
 APPROVAL_TIMEOUT_S = 30
 PUSH_INTERVAL_S = 0.2          # 5Hz throttle
 TASK_COMPLETE_QUIET_S = 4.0    # PostTool 后 N 秒无新 PreTool → 推断 task_complete
 COMPLETED_HOLD_S = 2.0         # completed=True 持续秒数 (覆盖 CELEBRATE 3s)
 DIZZY_HOLD_S = 3.0             # tool_error / task_error msg="error" 持续秒数
+
+# 设备 wire msg 字段值 (设备 firmware 可能 startswith 匹配 / 等值检查,改这些前先核对 state.py)
+MSG_ERROR = "error"
+MSG_COMPLETED = "completed"
+APPROVE_PREFIX = "approve: "
 
 # ── 全局状态 ───────────────────────────────────────────
 _stub = False  # --stub 模式
@@ -56,7 +60,6 @@ _last_activity_ts = 0.0
 _completed_until = 0.0       # > now → completed=True
 _completed_inferred_for_ts = 0.0  # one-shot guard: 已为这个 _last_activity_ts 推过 task_complete
 _dizzy_until = 0.0           # > now → msg="error"
-_session_active = False
 _current_prompt: Optional[dict] = None
 _current_running_msg = ""    # 显示在设备上的"running ..."文字
 
@@ -146,12 +149,12 @@ async def _send(payload: dict):
 def _build_msg() -> str:
     """msg 字段优先级: approval > error > completed > running > 默认空 (设备显 IDLE)。"""
     if _waiting > 0 and _current_prompt:
-        return f"approve: {_current_prompt.get('tool','')}"
+        return APPROVE_PREFIX + _current_prompt.get("tool", "")
     now = time.time()
     if _dizzy_until > now:
-        return "error"
+        return MSG_ERROR
     if _completed_until > now:
-        return "completed"
+        return MSG_COMPLETED
     if _running > 0 and _current_running_msg:
         return _current_running_msg
     if _running > 0:
@@ -174,6 +177,28 @@ def _to_device_wire() -> dict:
 def _mark_dirty():
     global _dirty
     _dirty = True
+
+
+def _enter_error_state(now: float, hard_reset: bool) -> None:
+    """tool_error / task_error 共同状态推进。
+    hard_reset=False (tool_error): _running--, _running==0 时清 running_msg。
+    hard_reset=True  (task_error): 整个 turn 失败,_running/_waiting 全置 0。
+    inference guard 锁住,避免 dizzy 过期后 quiet 4s 又被推 task_complete。"""
+    global _running, _waiting, _last_activity_ts, _dizzy_until
+    global _completed_until, _completed_inferred_for_ts, _current_running_msg
+    if hard_reset:
+        _running = 0
+        _waiting = 0
+        _current_running_msg = ""
+    else:
+        _running = max(0, _running - 1)
+        if _running == 0:
+            _current_running_msg = ""
+    _dizzy_until = now + DIZZY_HOLD_S
+    _completed_until = 0.0
+    _last_activity_ts = now
+    _completed_inferred_for_ts = _last_activity_ts
+    _mark_dirty()
 
 
 # ── 5Hz 推送 task ──────────────────────────────────────
@@ -223,7 +248,7 @@ async def _handle_envelope(env: dict) -> dict:
     """根据 event.kind 改 daemon 状态。返回给 hook_bridge 的 dict。
     仅 tool_start needs_approval=True 走 approval 同步阻塞 path。"""
     global _running, _waiting, _last_activity_ts, _dizzy_until
-    global _session_active, _current_prompt, _current_running_msg
+    global _current_prompt, _current_running_msg
     global _approval_in_progress, _decision_value, _completed_until
     global _completed_inferred_for_ts
 
@@ -288,15 +313,7 @@ async def _handle_envelope(env: dict) -> dict:
         return {"ok": True}
 
     if kind == "tool_error":
-        _running = max(0, _running - 1)
-        _last_activity_ts = now
-        _dizzy_until = now + DIZZY_HOLD_S
-        _completed_until = 0.0
-        # 锁 inference guard, 防 dizzy 过期后 quiet 4s 又推 task_complete (codex P2 bug 1)
-        _completed_inferred_for_ts = _last_activity_ts
-        if _running == 0:
-            _current_running_msg = ""
-        _mark_dirty()
+        _enter_error_state(now, hard_reset=False)
         return {"ok": True}
 
     if kind == "tool_batch_done":
@@ -306,7 +323,6 @@ async def _handle_envelope(env: dict) -> dict:
         return {"ok": True}
 
     if kind == "user_prompt":
-        _session_active = True
         _last_activity_ts = now
         # 清 completed 让设备退出 CELEBRATE, 准备进 BUSY
         _completed_until = 0.0
@@ -314,16 +330,8 @@ async def _handle_envelope(env: dict) -> dict:
         return {"ok": True}
 
     if kind == "task_error":
-        # StopFailure: API 错 / stream timeout
-        _running = 0
-        _waiting = 0
-        _dizzy_until = now + DIZZY_HOLD_S
-        _completed_until = 0.0
-        _current_running_msg = ""
-        _last_activity_ts = now
-        # 锁 inference guard, 防 dizzy 过期后 quiet 4s 又推 task_complete (codex P2 bug 1)
-        _completed_inferred_for_ts = _last_activity_ts
-        _mark_dirty()
+        # StopFailure: API 错 / stream timeout, 整个 turn 算失败
+        _enter_error_state(now, hard_reset=True)
         return {"ok": True}
 
     if kind in ("subagent_start", "notification", "unknown"):
@@ -334,9 +342,13 @@ async def _handle_envelope(env: dict) -> dict:
 
 
 # ── TCP server ─────────────────────────────────────────
+MAX_ENVELOPE_BYTES = 64 * 1024  # 远大于实测最大 envelope (~1.5KB),防超大 tool_input 截断
+
+
 async def _handle_client(reader, writer):
     try:
-        data = await asyncio.wait_for(reader.read(8192), timeout=35)
+        # hook_bridge 发完 SHUT_WR, read(N) 会读到 EOF 或 N 字节为止
+        data = await asyncio.wait_for(reader.read(MAX_ENVELOPE_BYTES), timeout=35)
         env = json.loads(data.decode())
         # approval path 不持锁 (需长时间等设备); 其它路径串行化
         kind = (env.get("event") or {}).get("kind")

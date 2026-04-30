@@ -18,7 +18,9 @@ import sys
 
 HOST = "127.0.0.1"
 PORT = 57320
-SOCKET_TIMEOUT = 35           # 覆盖 daemon 端 30s approval 窗口 + 缓冲
+CONNECT_TIMEOUT = 1.0     # localhost connect 应该 ms 级,1s 是 daemon 卡死的兜底
+RECV_TIMEOUT = 35         # 覆盖 daemon 端 30s approval 窗口 + 缓冲
+MAX_STDIN_BYTES = 1 << 20  # 1MB hook payload 上限,防超大 tool_response 内存炸
 APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
 
 # ── 5 桶 tool_category (research/hook_to_device_mapping_v1.md) ───
@@ -50,6 +52,11 @@ def _generic(event: dict) -> dict:
         "transcript_path": event.get("transcript_path", ""),
         "permission_mode": event.get("permission_mode", ""),
     }
+
+
+def _trunc(v, n: int) -> str:
+    """把 str 截到 n 字, 非 str 返回空串。设备显示用,防长尾敏感数据。"""
+    return v[:n] if isinstance(v, str) else ""
 
 
 def _hint_from_tool_input(tool_input) -> str:
@@ -101,9 +108,7 @@ def _normalize_post_tool(event: dict) -> dict:
 
 
 def _normalize_post_tool_fail(event: dict) -> dict:
-    err = event.get("error", "")
-    if isinstance(err, str):
-        err = err[:200]  # 设备显示截断
+    err = _trunc(event.get("error", ""), 200)
     tool = event.get("tool_name", "")
     return {
         "type": "event",
@@ -155,9 +160,7 @@ def _normalize_subagent_start(event: dict) -> dict:
 
 def _normalize_notification(event: dict) -> dict:
     """实测 notification_type 见过 'permission_prompt';其它子类型未观测,字段透传。"""
-    msg = event.get("message", "")
-    if isinstance(msg, str):
-        msg = msg[:200]
+    msg = _trunc(event.get("message", ""), 200)
     return {
         "type": "event",
         "v": 2,
@@ -173,9 +176,7 @@ def _normalize_notification(event: dict) -> dict:
 def _normalize_user_prompt(event: dict) -> dict:
     """用户提交 prompt → 强 turn_start 信号,daemon 用作清 idle / 启动 busy 状态。
     prompt 原文截 80 字给设备显示,避免敏感内容长尾。"""
-    prompt = event.get("prompt", "")
-    if isinstance(prompt, str):
-        prompt = prompt[:80]
+    prompt = _trunc(event.get("prompt", ""), 80)
     return {
         "type": "event",
         "v": 2,
@@ -190,12 +191,8 @@ def _normalize_user_prompt(event: dict) -> dict:
 def _normalize_stop_failure(event: dict) -> dict:
     """assistant turn 失败 (API timeout / stream error 等)。
     daemon 用作 task_error 信号,设备可显示 dizzy 状态。"""
-    err = event.get("error", "")
-    last_msg = event.get("last_assistant_message", "")
-    if isinstance(err, str):
-        err = err[:200]
-    if isinstance(last_msg, str):
-        last_msg = last_msg[:200]
+    err = _trunc(event.get("error", ""), 200)
+    last_msg = _trunc(event.get("last_assistant_message", ""), 200)
     return {
         "type": "event",
         "v": 2,
@@ -231,9 +228,12 @@ NORMALIZERS = {
 
 
 def _call_daemon(envelope: dict) -> dict:
-    """同步 socket 调用。daemon 不可达 / 超时 / JSON 错都 fail-open 返回 {}。"""
+    """同步 socket 调用。daemon 不可达 / 超时 / JSON 错都 fail-open 返回 {}。
+    connect 用短超时 (1s) 防 daemon 卡死时拖死 Claude Code,
+    recv 用长超时 (35s) 覆盖 approval 窗口。"""
     try:
-        with socket.create_connection((HOST, PORT), timeout=SOCKET_TIMEOUT) as s:
+        with socket.create_connection((HOST, PORT), timeout=CONNECT_TIMEOUT) as s:
+            s.settimeout(RECV_TIMEOUT)
             s.sendall(json.dumps(envelope).encode("utf-8"))
             s.shutdown(socket.SHUT_WR)
             buf = b""
@@ -250,7 +250,9 @@ def _call_daemon(envelope: dict) -> dict:
 
 
 def main():
-    raw = sys.stdin.read().strip()
+    # 上限读 1MB:超大 tool_response (例如 Bash 长输出) 不该把 hook_bridge 撑爆,
+    # 设备只能显几十字,后面又会再截 80 字,1MB 已经远超有用范围
+    raw = sys.stdin.read(MAX_STDIN_BYTES).strip()
     if not raw:
         print(json.dumps({}))
         return
