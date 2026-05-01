@@ -14,6 +14,7 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DAEMON_PATH = os.path.join(ROOT, "daemon", "ble_daemon.py")
 HOST = "127.0.0.1"
 PORT = 57320
 
@@ -146,11 +147,12 @@ async def test_malformed_no_crash():
 
 async def main():
     # 起 stub daemon
-    log = "/tmp/daemon_concurrency.log"
+    import tempfile
+    log = os.path.join(tempfile.gettempdir(), "daemon_concurrency.log")
     if os.path.exists(log):
         os.remove(log)
     proc = subprocess.Popen(
-        [sys.executable, "-u", os.path.join(ROOT, "ble_daemon.py"), "--stub"],
+        [sys.executable, "-u", _DAEMON_PATH, "--stub"],
         stdout=open(log, "w"), stderr=subprocess.STDOUT,
     )
     try:

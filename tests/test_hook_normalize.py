@@ -16,7 +16,7 @@ import sys
 
 # 让 import 找到仓库根的 hook_bridge.py
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "daemon"))
 import hook_bridge as hb  # noqa: E402
 
 FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures", "probe_samples")
