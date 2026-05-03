@@ -3,21 +3,23 @@
 #
 # 输入: hook_bridge.py 通过 TCP 57320 推 v2 envelope
 #       {type:"event", v:2, event:{kind, ...}, generic:{...}}
-# 输出: 翻译为 protocol.py v1 设备 wire (running/waiting/completed/msg/tokens/prompt)
-#       通过 BLE NUS 写到 ESP32, 6 字段严格,设备 firmware 不动
+# 输出: 翻译为 protocol.py v2 设备 wire (9 字段: running/waiting/completed/msg/tokens/prompt/category/error/interrupted)
+#       通过 BLE NUS 写到 ESP32
 #
-# 状态机:
-#   tool_start → running++  / 或 waiting++ (approval) 阻塞等设备回 once|deny
-#   tool_done  → running--, mark last_activity
-#   tool_error / task_error → running--, msg="error", _dizzy_until 短暂
+# 状态机 (v2 - 基于 _tools 字典):
+#   tool_start → _tools[tool_use_id] = {tool, category, summary, status:"running"|"waiting", ts}
+#                needs_approval=True 时加入 _approval_queue, 阻塞等设备回 once|deny
+#   tool_done  → 从 _tools 删除, mark last_activity
+#   tool_error → 从 _tools 删除, 设置 _current_error, _dizzy_until 短暂
+#   task_error → 清空 _tools, 设置 _current_error, _dizzy_until
 #   tool_batch_done → soft task_complete 候选信号
-#   user_prompt → 标记 session_active, 清 idle, 清 completed
-#   subagent_start / notification → 仅信息, 不改状态
+#   user_prompt → 清 completed, 清 _has_subagent
+#   subagent_start → 设置 _has_subagent=True
 #
-# 推断兜底 (Stage 1 发现 Stop hook 不冒,只能从沉默期推):
-#   running==0 and waiting==0 and now-last_activity > TASK_COMPLETE_QUIET_S
+# 推断兜底 (Stop hook 不冒,只能从沉默期推):
+#   len(_tools)==0 and len(_approval_queue)==0 and now-last_activity > threshold
 #     → completed=True 短暂 (CELEBRATE 触发后清掉)
-#   now-last_activity > IDLE_QUIET_S → 设备进 IDLE 状态由 base 自动覆盖
+#     threshold = 8s if _has_subagent else 4s
 #
 # 5Hz 节流: 状态变化只标 dirty, 单独 _pusher_task 每 200ms 推一次
 #           approval 路径绕过节流同步推 (不能让用户等)
@@ -53,15 +55,19 @@ APPROVE_PREFIX = "approve: "
 
 # ── 全局状态 ───────────────────────────────────────────
 _stub = False  # --stub 模式
-_running = 0
-_waiting = 0
+
+# v2 状态机: 基于 _tools 字典
+_tools: dict = {}  # tool_use_id → {tool, category, summary, status:"running"|"waiting", ts}
+_approval_queue: list = []  # 等待审批的 tool_use_id 列表 (串行化多审批)
+_has_subagent: bool = False  # 是否有子 Agent 活动 (影响 completed 推断阈值)
+_current_error: str = ""  # 最近一次错误信息 (截断 80 字)
+_current_interrupted: bool = False  # 最近一次是否被用户中断
+
 _dirty = False
 _last_activity_ts = 0.0
 _completed_until = 0.0       # > now → completed=True
 _completed_inferred_for_ts = 0.0  # one-shot guard: 已为这个 _last_activity_ts 推过 task_complete
 _dizzy_until = 0.0           # > now → msg="error"
-_current_prompt: Optional[dict] = None
-_current_running_msg = ""    # 显示在设备上的"running ..."文字
 
 # BLE 连接
 _client = None
@@ -131,8 +137,8 @@ async def _connect_loop():
 
 
 async def _send(payload: dict):
-    """v1 设备 wire 严格按 protocol.py: running/waiting/completed/msg/tokens/prompt。
-    payload 仅这 6 字段; 多余字段会被设备 StatusMsg 忽略但浪费 BLE 带宽。"""
+    """v2 设备 wire 9 字段: running/waiting/completed/msg/tokens/prompt/category/error/interrupted。
+    多余字段会被设备 StatusMsg 忽略但浪费 BLE 带宽。"""
     if _stub:
         print(f"[stub-send] t={time.time():.3f} {json.dumps(payload, ensure_ascii=False)}")
         return
@@ -145,32 +151,76 @@ async def _send(payload: dict):
         await _client.write_gatt_char(NUS_RX, data[i:i+20], response=False)
 
 
-# ── 状态翻译: 内部 v2 状态 → v1 设备 wire ──────────────
+# ── 状态翻译: 内部 v2 状态 → v2 设备 wire ──────────────
+def _get_running_count() -> int:
+    """统计 status="running" 的工具数。"""
+    return sum(1 for t in _tools.values() if t["status"] == "running")
+
+
+def _get_waiting_count() -> int:
+    """等待审批的工具数 = _approval_queue 长度。"""
+    return len(_approval_queue)
+
+
+def _get_current_category() -> str:
+    """返回当前正在运行的工具类别 (优先 waiting > running)。
+    多个工具时返回第一个; 无工具时返回空串。"""
+    if _approval_queue:
+        tid = _approval_queue[0]
+        if tid in _tools:
+            return _tools[tid].get("category", "")
+    for t in _tools.values():
+        if t["status"] == "running":
+            return t.get("category", "")
+    return ""
+
+
+def _build_prompt() -> Optional[dict]:
+    """从 _approval_queue[0] 构建 prompt 字段。"""
+    if not _approval_queue:
+        return None
+    tid = _approval_queue[0]
+    if tid not in _tools:
+        return None
+    t = _tools[tid]
+    return {
+        "id": tid,
+        "tool": t["tool"],
+        "hint": t["summary"][:80] if t["summary"] else ""
+    }
+
+
 def _build_msg() -> str:
     """msg 字段优先级: approval > error > completed > running > 默认空 (设备显 IDLE)。"""
-    if _waiting > 0 and _current_prompt:
-        return APPROVE_PREFIX + _current_prompt.get("tool", "")
+    if _approval_queue:
+        tid = _approval_queue[0]
+        if tid in _tools:
+            return APPROVE_PREFIX + _tools[tid]["tool"]
     now = time.time()
     if _dizzy_until > now:
         return MSG_ERROR
     if _completed_until > now:
         return MSG_COMPLETED
-    if _running > 0 and _current_running_msg:
-        return _current_running_msg
-    if _running > 0:
-        return "running"
+    # running: 显示第一个 running 工具
+    for t in _tools.values():
+        if t["status"] == "running":
+            summary = t["summary"][:40] if t["summary"] else ""
+            return f"{t['tool']}: {summary}" if summary else t["tool"]
     return ""
 
 
 def _to_device_wire() -> dict:
-    """严格按 protocol.py v1 schema, 6 字段。"""
+    """v2 wire schema, 9 字段。"""
     return {
-        "running":   _running,
-        "waiting":   _waiting,
-        "completed": _completed_until > time.time(),
-        "msg":       _build_msg(),
-        "tokens":    0,  # TODO: 下个 PR 从 tool_response 抽
-        "prompt":    _current_prompt,
+        "running":     _get_running_count(),
+        "waiting":     _get_waiting_count(),
+        "completed":   _completed_until > time.time(),
+        "msg":         _build_msg(),
+        "tokens":      0,  # TODO: 下个 PR 从 tool_response 抽
+        "prompt":      _build_prompt(),
+        "category":    _get_current_category(),
+        "error":       _current_error,
+        "interrupted": _current_interrupted,
     }
 
 
@@ -179,22 +229,22 @@ def _mark_dirty():
     _dirty = True
 
 
-def _enter_error_state(now: float, hard_reset: bool) -> None:
+def _enter_error_state(now: float, hard_reset: bool, error_msg: str, is_interrupt: bool) -> None:
     """tool_error / task_error 共同状态推进。
-    hard_reset=False (tool_error): _running--, _running==0 时清 running_msg。
-    hard_reset=True  (task_error): 整个 turn 失败,_running/_waiting 全置 0。
-    inference guard 锁住,避免 dizzy 过期后 quiet 4s 又被推 task_complete。"""
-    global _running, _waiting, _last_activity_ts, _dizzy_until
-    global _completed_until, _completed_inferred_for_ts, _current_running_msg
+    hard_reset=False (tool_error): 单个工具失败，从 _tools 删除该工具。
+    hard_reset=True  (task_error): 整个 turn 失败，清空 _tools 和 _approval_queue。
+    inference guard 锁住，避免 dizzy 过期后 quiet 4s 又被推 task_complete。"""
+    global _last_activity_ts, _dizzy_until, _completed_until, _completed_inferred_for_ts
+    global _current_error, _current_interrupted
+
     if hard_reset:
-        _running = 0
-        _waiting = 0
-        _current_running_msg = ""
-    else:
-        _running = max(0, _running - 1)
-        if _running == 0:
-            _current_running_msg = ""
-    _dizzy_until = now + DIZZY_HOLD_S
+        _tools.clear()
+        _approval_queue.clear()
+
+    _current_error = error_msg[:80] if error_msg else ""
+    _current_interrupted = is_interrupt
+    # Bug fix: 中断时不触发 DIZZY，直接回 IDLE
+    _dizzy_until = now + DIZZY_HOLD_S if not is_interrupt else 0.0
     _completed_until = 0.0
     _last_activity_ts = now
     _completed_inferred_for_ts = _last_activity_ts
@@ -208,19 +258,21 @@ async def _pusher_tick(last_pushed_wire):
     global _dirty, _completed_until, _completed_inferred_for_ts
 
     # task_complete 推断: 静默期 + 之前有过活动 + 还没为这个 _last_activity_ts 推过
+    # 阈值动态化: 有子 Agent 时 8s, 否则 4s
     now = time.time()
+    threshold = 8.0 if _has_subagent else TASK_COMPLETE_QUIET_S
     if (
-        _running == 0
-        and _waiting == 0
+        len(_tools) == 0
+        and len(_approval_queue) == 0
         and _last_activity_ts > 0
-        and now - _last_activity_ts > TASK_COMPLETE_QUIET_S
+        and now - _last_activity_ts > threshold
         and _completed_inferred_for_ts != _last_activity_ts  # one-shot 关键
         and _dizzy_until < now           # 错误状态不要被 completed 盖
     ):
         _completed_until = now + COMPLETED_HOLD_S
         _completed_inferred_for_ts = _last_activity_ts
         _mark_dirty()
-        print(f"[infer] task_complete (quiet={now - _last_activity_ts:.1f}s)")
+        print(f"[infer] task_complete (quiet={now - _last_activity_ts:.1f}s, threshold={threshold:.1f}s, subagent={_has_subagent})")
 
     # completed 到期了也是状态变化,标 dirty 让 wire 回归 IDLE
     if _completed_until > 0 and _completed_until <= now and last_pushed_wire and last_pushed_wire.get("completed"):
@@ -247,10 +299,9 @@ async def _pusher_task():
 async def _handle_envelope(env: dict) -> dict:
     """根据 event.kind 改 daemon 状态。返回给 hook_bridge 的 dict。
     仅 tool_start needs_approval=True 走 approval 同步阻塞 path。"""
-    global _running, _waiting, _last_activity_ts, _dizzy_until
-    global _current_prompt, _current_running_msg
-    global _approval_in_progress, _decision_value, _completed_until
-    global _completed_inferred_for_ts
+    global _last_activity_ts, _dizzy_until, _approval_in_progress, _decision_value
+    global _completed_until, _completed_inferred_for_ts, _has_subagent
+    global _current_error, _current_interrupted
 
     event = env.get("event") or {}
     kind = event.get("kind", "")
@@ -260,22 +311,36 @@ async def _handle_envelope(env: dict) -> dict:
 
     if kind == "tool_start":
         tool = event.get("tool", "")
+        tool_use_id = event.get("tool_use_id", "")
+        category = event.get("tool_category", "")
         summary = event.get("summary", "")
+
+        if not tool_use_id:
+            print(f"[warn] tool_start missing tool_use_id, ignoring")
+            return {"decision": "once"}
+
+        # 添加到 _tools
+        _tools[tool_use_id] = {
+            "tool": tool,
+            "category": category,
+            "summary": summary,
+            "status": "waiting" if event.get("needs_approval") else "running",
+            "ts": now,
+        }
+        _last_activity_ts = now
+
         if not event.get("needs_approval"):
-            _running += 1
-            _last_activity_ts = now
-            _current_running_msg = f"{tool}: {summary[:40]}" if summary else tool
             _mark_dirty()
             return {"decision": "once"}
 
         # approval path: 同步阻塞等设备
-        _waiting += 1
+        _approval_queue.append(tool_use_id)
         _approval_in_progress = True
-        _current_prompt = {"id": "cli-req", "tool": tool, "hint": summary[:80]}
         _decision_event.clear()
         _decision_value = None
         # approval 绕过 5Hz 立刻推, 否则用户要等 200ms 看 LED
         await _send(_to_device_wire())
+
         if _stub:
             # stub 模式无真设备,自动 once,免锁 Claude Code 30s
             print("[approval] stub mode → auto-once")
@@ -287,37 +352,58 @@ async def _handle_envelope(env: dict) -> dict:
             except asyncio.TimeoutError:
                 print("[approval] timeout → deny")
                 decision = "deny"
+
         # 清 approval 状态
-        _waiting = max(0, _waiting - 1)
+        if tool_use_id in _approval_queue:
+            _approval_queue.remove(tool_use_id)
         _approval_in_progress = False
-        _current_prompt = None
+
         # 刷新到 wait 之后的真实时间, 防 quiet 立刻满足 (codex P2 bug 2)
-        # 不能用 path 顶部的 now —— wait_for 可能已经过了 30s
         _last_activity_ts = time.time()
+
         if decision == "once":
-            _running += 1   # 视为 tool_start 真正开始
-            _current_running_msg = f"{tool}: {summary[:40]}" if summary else tool
+            if tool_use_id in _tools:
+                _tools[tool_use_id]["status"] = "running"
         else:
-            # deny / timeout: 不让 pusher 把它当 task_complete 候选
+            # deny / timeout: 从 _tools 删除, 不让 pusher 把它当 task_complete 候选
+            if tool_use_id in _tools:
+                del _tools[tool_use_id]
             _completed_inferred_for_ts = _last_activity_ts
+
         _mark_dirty()
         await _send(_to_device_wire())  # 立即推, 别等 throttle
         return {"decision": decision}
 
     if kind == "tool_done":
-        _running = max(0, _running - 1)
+        tool_use_id = event.get("tool_use_id", "")
+        interrupted = event.get("interrupted", False)
+
+        if tool_use_id in _tools:
+            del _tools[tool_use_id]
+
         _last_activity_ts = now
-        if _running == 0:
-            _current_running_msg = ""
+
+        # 清除 error/interrupted 状态 (如果没有其他工具在 error 状态)
+        if len(_tools) == 0:
+            _current_error = ""
+            _current_interrupted = interrupted  # Bug fix: 使用读到的值而非写死 False
+
         _mark_dirty()
         return {"ok": True}
 
     if kind == "tool_error":
-        _enter_error_state(now, hard_reset=False)
+        tool_use_id = event.get("tool_use_id", "")
+        error_msg = event.get("error_msg", "")
+        is_interrupt = event.get("is_interrupt", False)
+
+        if tool_use_id in _tools:
+            del _tools[tool_use_id]
+
+        _enter_error_state(now, hard_reset=False, error_msg=error_msg, is_interrupt=is_interrupt)
         return {"ok": True}
 
     if kind == "tool_batch_done":
-        # 不直接改 running 计数 (PostToolUse 已分别减过), 只刷活动时间
+        # 不直接改 _tools (PostToolUse 已分别删过), 只刷活动时间
         _last_activity_ts = now
         _mark_dirty()
         return {"ok": True}
@@ -326,15 +412,26 @@ async def _handle_envelope(env: dict) -> dict:
         _last_activity_ts = now
         # 清 completed 让设备退出 CELEBRATE, 准备进 BUSY
         _completed_until = 0.0
+        # 新 turn 开始, 清除 subagent 标志 (假设新 turn 不继承上个 turn 的 subagent)
+        _has_subagent = False
+        # Bug fix: 清除旧 turn 的错误状态
+        _current_error = ""
+        _current_interrupted = False
         _mark_dirty()
         return {"ok": True}
 
     if kind == "task_error":
         # StopFailure: API 错 / stream timeout, 整个 turn 算失败
-        _enter_error_state(now, hard_reset=True)
+        error_msg = event.get("error", "")
+        _enter_error_state(now, hard_reset=True, error_msg=error_msg, is_interrupt=False)
         return {"ok": True}
 
-    if kind in ("subagent_start", "notification", "unknown"):
+    if kind == "subagent_start":
+        _has_subagent = True
+        # subagent 启动不算活动 (不刷 _last_activity_ts), 只影响 completed 阈值
+        return {"ok": True}
+
+    if kind in ("notification", "unknown"):
         # 当前阶段仅记录,不改基础状态
         return {"ok": True}
 

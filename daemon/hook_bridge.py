@@ -22,6 +22,8 @@ CONNECT_TIMEOUT = 1.0     # localhost connect 应该 ms 级,1s 是 daemon 卡死
 RECV_TIMEOUT = 35         # 覆盖 daemon 端 30s approval 窗口 + 缓冲
 MAX_STDIN_BYTES = 1 << 20  # 1MB hook payload 上限,防超大 tool_response 内存炸
 APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
+# NotebookEdit 归 edit 类但不需审批：notebook 编辑操作危险性低于直接文件写入，
+# 且 notebook cell 输出可在 Claude Code UI 中直接查看，无需额外硬件确认。
 
 # ── 5 桶 tool_category (research/hook_to_device_mapping_v1.md) ───
 _TOOL_CATEGORY = {
@@ -61,14 +63,15 @@ def _trunc(v, n: int) -> str:
 
 def _hint_from_tool_input(tool_input) -> str:
     """从 tool_input 抽一句给设备 LCD 显示的短提示, 80 字以内。
-    优先级: command (Bash) > file_path (Read/Edit/Write) > description > 截断 dict。"""
+    优先级: command (Bash) > file_path (Read/Edit/Write) > description > 空串。
+    没有已知 key 时返回空串而非序列化 dict，防止暴露敏感内容。"""
     if not isinstance(tool_input, dict):
         return ""
     for key in ("command", "file_path", "pattern", "url", "description"):
         v = tool_input.get(key)
         if isinstance(v, str) and v:
             return v[:80]
-    return str(tool_input)[:80]
+    return ""
 
 
 # ── 6 类 normalizer (返回 v2 envelope) ──────────────────
@@ -91,8 +94,10 @@ def _normalize_pre_tool(event: dict) -> dict:
 
 def _normalize_post_tool(event: dict) -> dict:
     """PostToolUse 仅 success path,失败走 PostToolUseFailure 独立 hook。
-    实测 tool_response 无 exit_code 字段,只能据 hook 名区分成功/失败。"""
+    实测 tool_response 无 exit_code 字段,只能据 hook 名区分成功/失败。
+    tool_response.interrupted 表示工具正常返回但实际是被用户中断的,需提取。"""
     tool = event.get("tool_name", "")
+    tool_response = event.get("tool_response") or {}
     return {
         "type": "event",
         "v": 2,
@@ -102,13 +107,14 @@ def _normalize_post_tool(event: dict) -> dict:
             "tool_category": _tool_category(tool),
             "duration_ms":   event.get("duration_ms", 0),
             "tool_use_id":   event.get("tool_use_id", ""),
+            "interrupted":   bool(tool_response.get("interrupted", False)),
         },
         "generic": _generic(event),
     }
 
 
 def _normalize_post_tool_fail(event: dict) -> dict:
-    err = _trunc(event.get("error", ""), 200)
+    err = _trunc(event.get("error", ""), 80)
     tool = event.get("tool_name", "")
     return {
         "type": "event",
@@ -160,7 +166,7 @@ def _normalize_subagent_start(event: dict) -> dict:
 
 def _normalize_notification(event: dict) -> dict:
     """实测 notification_type 见过 'permission_prompt';其它子类型未观测,字段透传。"""
-    msg = _trunc(event.get("message", ""), 200)
+    msg = _trunc(event.get("message", ""), 80)
     return {
         "type": "event",
         "v": 2,
@@ -191,8 +197,8 @@ def _normalize_user_prompt(event: dict) -> dict:
 def _normalize_stop_failure(event: dict) -> dict:
     """assistant turn 失败 (API timeout / stream error 等)。
     daemon 用作 task_error 信号,设备可显示 dizzy 状态。"""
-    err = _trunc(event.get("error", ""), 200)
-    last_msg = _trunc(event.get("last_assistant_message", ""), 200)
+    err = _trunc(event.get("error", ""), 80)
+    last_msg = _trunc(event.get("last_assistant_message", ""), 80)
     return {
         "type": "event",
         "v": 2,

@@ -3,14 +3,16 @@
 #
 # 所有消息均为换行符结尾的 JSON 字符串，通过 BLE NUS 传输。
 #
-# PC → 设备（状态推送）：
+# PC → 设备（状态推送，v2 wire，9 字段）：
 #   {"running": 1, "waiting": 0, "completed": false,
 #    "msg": "显示文字", "tokens": 0,
-#    "prompt": {"id": "xxx", "tool": "Bash", "hint": "命令内容"}}
+#    "prompt": {"id": "toolu_xxx", "tool": "Bash", "hint": "命令内容"},
+#    "category": "exec", "error": "", "interrupted": false}
 #   其中 prompt 字段存在时表示需要用户审批。
 #
 # 设备 → PC（审批决策）：
-#   {"cmd": "permission", "id": "cli-req", "decision": "once"}
+#   {"cmd": "permission", "id": "toolu_xxx", "decision": "once"}
+#   id 字段为真实 tool_use_id，由 PC 端 prompt.id 提供
 #
 # PC → 设备（控制命令）：
 #   {"cmd": "name"/"owner"/"unpair"}
@@ -19,34 +21,77 @@
 #   {"ack": "name", "ok": true}
 # ============================================================
 
-import ujson  # MicroPython 内置的轻量级 JSON 库（比标准 json 省内存）
+try:
+    import ujson  # MicroPython 内置的轻量级 JSON 库（比标准 json 省内存）
+except ImportError:
+    import json as ujson  # PC 端测试时回退到标准 json 库
 
 # ── 角色/动画状态枚举 ─────────────────────────────────────────
 # 这些整数值同时作为 buddies.py 字典的 key，与动画帧一一对应。
-SLEEP     = 0   # 睡眠：长时间无活动
-IDLE      = 1   # 待机：已连接但 Claude 无任务
-BUSY      = 2   # 忙碌：Claude 正在运行工具
-ATTENTION = 3   # 注意：有工具在等待审批
-CELEBRATE = 4   # 庆祝：任务刚刚完成（短暂覆盖）
-DIZZY     = 5   # 晕眩：保留状态，暂未使用
-HEART     = 6   # 爱心：用户刚刚按下批准按钮（短暂覆盖）
+SLEEP     = 0   # 休眠：长时间无活动
+IDLE      = 1   # 空闲：已连接但 Claude 无任务
+WORKING   = 2   # 执行中：Claude 正在运行工具
+PENDING   = 3   # 待审批：有工具在等待审批
+CELEBRATE = 4   # 完成庆祝：任务刚刚完成（短暂覆盖）
+ERROR     = 5   # 出错：工具执行失败或 API 超时
+APPROVED  = 6   # 已批准：用户刚刚按下批准按钮（短暂覆盖）
 
 # 状态名称映射表，下标与上面枚举对应，用于在屏幕上显示文字
-STATE_NAMES = ["sleep", "idle", "busy", "attention", "celebrate", "dizzy", "heart"]
+STATE_NAMES = ["sleep", "idle", "working", "pending", "celebrate", "error", "approved"]
+
+
+# ── 状态转换事件判断器 ─────────────────────────────────────────
+class StateEvent:
+    """
+    状态转换触发器，封装所有状态转换的条件判断逻辑。
+    使用 @staticmethod 装饰器，可直接通过类名调用。
+    """
+
+    @staticmethod
+    def should_celebrate(msg: 'StatusMsg') -> bool:
+        """判断是否应触发完成庆祝动画（CELEBRATE 覆盖 2-3s）"""
+        return msg.completed
+
+    @staticmethod
+    def should_show_error(msg: 'StatusMsg') -> bool:
+        """判断是否应显示错误状态（ERROR 覆盖 3s）"""
+        return bool(msg.error) and not msg.interrupted
+
+    @staticmethod
+    def should_skip_error(msg: 'StatusMsg') -> bool:
+        """判断是否应跳过错误显示（用户主动中断，直接回 IDLE）"""
+        return msg.interrupted and bool(msg.error)
+
+    @staticmethod
+    def get_base_state(msg: 'StatusMsg') -> int:
+        """
+        根据 running/waiting 计算基础状态。
+        优先级：PENDING > WORKING > IDLE
+        """
+        if msg.waiting > 0:
+            return PENDING
+        elif msg.running > 0:
+            return WORKING
+        else:
+            return IDLE
+
+    @staticmethod
+    def needs_approval(msg: 'StatusMsg') -> bool:
+        """判断是否有待审批的工具（prompt 非空）"""
+        return msg.prompt is not None
+
+    @staticmethod
+    def is_idle(msg: 'StatusMsg') -> bool:
+        """判断是否完全空闲（无运行、无等待）"""
+        return msg.running == 0 and msg.waiting == 0
 
 
 class StatusMsg:
-    """
-    封装从 PC 端收到的状态消息。
-    PC 的 hook_bridge.py 会在以下时机发送此类消息：
-      - PreToolUse：工具开始前（running/waiting 字段变化）
-      - PostToolUse：工具结束后
-      - Stop：Claude 完成整个任务
-    """
+    """封装从 PC 端收到的 v2 wire 状态消息（9 字段）。"""
     def __init__(self, d: dict):
-        # 当前正在执行的工具数量（>0 表示 BUSY 状态）
+        # 当前正在执行的工具数量（>0 表示 WORKING 状态）
         self.running   = d.get("running", 0)
-        # 等待审批的工具数量（>0 表示 ATTENTION 状态）
+        # 等待审批的工具数量（>0 表示 PENDING 状态）
         self.waiting   = d.get("waiting", 0)
         # 任务是否刚完成（True 时触发 CELEBRATE 动画）
         self.completed = d.get("completed", False)
@@ -56,7 +101,13 @@ class StatusMsg:
         self.tokens    = d.get("tokens", 0)
         # 审批请求字典，格式：{"id": str, "tool": str, "hint": str}
         # 为 None 时表示无需审批
-        self.prompt    = d.get("prompt")
+        self.prompt      = d.get("prompt")
+        # 当前工具类别：exec/edit/read/web/agent/other/""
+        self.category    = d.get("category", "")
+        # 最近一次错误原文（截断 80 字），ERROR 状态下显示
+        self.error       = d.get("error", "")
+        # True = 用户主动 Ctrl+C 中断，设备跳过 ERROR 直接回 IDLE
+        self.interrupted = d.get("interrupted", False)
 
 
 def parse(line: str):

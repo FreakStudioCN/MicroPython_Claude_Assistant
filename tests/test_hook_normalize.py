@@ -6,9 +6,12 @@
 # 覆盖:
 #   1. 8 类真实 fixture 喂对应 normalizer, 校验 v2 envelope shape
 #   2. _tool_category 6 桶映射
-#   3. _hint_from_tool_input 各字段优先级 + None / 空字典边界
+#   3. _hint_from_tool_input 各字段优先级 + None / 空字典 / 无已知 key 边界
 #   4. fallback path: 未识别 hook 不崩, kind="unknown"
 #   5. PreToolUse approval gate: Bash/Write/Edit needs_approval=True
+#   6. 截断长度统一 80 字 (error_msg / message / error / last_assistant_message)
+#   7. PostToolUse 提取 tool_response.interrupted
+#   8. _hint_from_tool_input 无已知 key 时返回空串（不序列化 dict）
 
 import json
 import os
@@ -86,7 +89,8 @@ def test_hint_extraction():
         ({"description": "doing thing"}, "doing thing"),   # 兜底 description
         # command 优先于 description
         ({"command": "ls", "description": "list"}, "ls"),
-        ({}, "{}"),                                        # 空 dict 退化为 str
+        ({}, ""),                                          # 无已知 key → 空串（不暴露 dict）
+        ({"unknown_key": "val"}, ""),                      # 无已知 key → 空串
         (None, ""),                                        # 非 dict 输入
         ("not a dict", ""),                                # 非 dict 输入
     ]
@@ -138,27 +142,88 @@ def test_approval_gate():
 
 
 def test_truncation():
-    """敏感字段截断: error_msg 200, prompt 80, message 200。"""
+    """所有字段截断统一为 80 字: error_msg / prompt / message / error / last_assistant_message。"""
     g = {
         "session_id": "s", "cwd": "/x", "transcript_path": "/x.j",
         "permission_mode": "auto",
     }
+    # PostToolUseFailure: error_msg 截 80
     env_err = hb.NORMALIZERS["PostToolUseFailure"]({
         **g, "hook_event_name": "PostToolUseFailure",
         "tool_name": "Bash", "tool_input": {},
         "error": "x" * 500, "is_interrupt": False, "duration_ms": 0,
         "tool_use_id": "t",
     })
-    _assert(len(env_err["event"]["error_msg"]) == 200,
-            f"error_msg not truncated: len={len(env_err['event']['error_msg'])}")
+    _assert(len(env_err["event"]["error_msg"]) == 80,
+            f"error_msg not truncated to 80: len={len(env_err['event']['error_msg'])}")
 
+    # UserPromptSubmit: prompt 截 80
     env_p = hb.NORMALIZERS["UserPromptSubmit"]({
         **g, "hook_event_name": "UserPromptSubmit",
         "prompt": "y" * 500,
     })
     _assert(len(env_p["event"]["prompt"]) == 80,
-            f"prompt not truncated: len={len(env_p['event']['prompt'])}")
-    print("  ok  truncation (error 500→200, prompt 500→80)")
+            f"prompt not truncated to 80: len={len(env_p['event']['prompt'])}")
+
+    # Notification: message 截 80
+    env_n = hb.NORMALIZERS["Notification"]({
+        **g, "hook_event_name": "Notification",
+        "message": "z" * 500, "notification_type": "permission_prompt",
+    })
+    _assert(len(env_n["event"]["message"]) == 80,
+            f"message not truncated to 80: len={len(env_n['event']['message'])}")
+
+    # StopFailure: error / last_assistant_message 截 80
+    env_sf = hb.NORMALIZERS["StopFailure"]({
+        **g, "hook_event_name": "StopFailure",
+        "error": "e" * 500, "last_assistant_message": "m" * 500,
+    })
+    _assert(len(env_sf["event"]["error"]) == 80,
+            f"StopFailure.error not truncated to 80")
+    _assert(len(env_sf["event"]["last_assistant_message"]) == 80,
+            f"last_assistant_message not truncated to 80")
+
+    print("  ok  truncation: all fields unified to 80 chars")
+
+
+def test_post_tool_interrupted():
+    """PostToolUse 的 tool_response.interrupted 字段应被正确提取。"""
+    g = {
+        "session_id": "s", "cwd": "/x", "transcript_path": "/x.j",
+        "permission_mode": "auto",
+    }
+    # interrupted=True：用户主动中断
+    env_yes = hb.NORMALIZERS["PostToolUse"]({
+        **g, "hook_event_name": "PostToolUse",
+        "tool_name": "Bash", "tool_use_id": "t", "duration_ms": 100,
+        "tool_input": {"command": "sleep 60"},
+        "tool_response": {"stdout": "", "stderr": "", "interrupted": True,
+                          "isImage": False, "noOutputExpected": False},
+    })
+    _assert(env_yes["event"]["interrupted"] is True,
+            "interrupted=True should be extracted from tool_response")
+
+    # interrupted=False：正常完成
+    env_no = hb.NORMALIZERS["PostToolUse"]({
+        **g, "hook_event_name": "PostToolUse",
+        "tool_name": "Bash", "tool_use_id": "t", "duration_ms": 100,
+        "tool_input": {"command": "ls"},
+        "tool_response": {"stdout": "file.py", "interrupted": False,
+                          "isImage": False, "noOutputExpected": False},
+    })
+    _assert(env_no["event"]["interrupted"] is False,
+            "interrupted=False should be extracted")
+
+    # 缺失 tool_response：默认 False（向后兼容）
+    env_missing = hb.NORMALIZERS["PostToolUse"]({
+        **g, "hook_event_name": "PostToolUse",
+        "tool_name": "Read", "tool_use_id": "t", "duration_ms": 50,
+        "tool_input": {"file_path": "/x"},
+    })
+    _assert(env_missing["event"]["interrupted"] is False,
+            "missing tool_response should default interrupted=False")
+
+    print("  ok  PostToolUse interrupted field (3 cases)")
 
 
 def main():
@@ -169,6 +234,7 @@ def main():
         test_fallback_unknown,
         test_approval_gate,
         test_truncation,
+        test_post_tool_interrupted,
     ]
     print(f"running {len(tests)} test groups...")
     for t in tests:
