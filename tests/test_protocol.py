@@ -17,6 +17,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "device"))
 import protocol as p  # noqa: E402
+import state as st    # noqa: E402
 
 
 def _assert(cond, msg):
@@ -29,8 +30,8 @@ def _assert(cond, msg):
 def test_should_celebrate():
     msg_yes = p.StatusMsg({"completed": True})
     msg_no = p.StatusMsg({"completed": False})
-    _assert(p.StateEvent.should_celebrate(msg_yes) is True, "completed=True should celebrate")
-    _assert(p.StateEvent.should_celebrate(msg_no) is False, "completed=False should not celebrate")
+    _assert(st.StateEvent.should_celebrate(msg_yes) is True, "completed=True should celebrate")
+    _assert(st.StateEvent.should_celebrate(msg_no) is False, "completed=False should not celebrate")
     print("  ok  StateEvent.should_celebrate()")
 
 
@@ -38,9 +39,9 @@ def test_should_show_error():
     msg_error = p.StatusMsg({"error": "boom", "interrupted": False})
     msg_interrupted = p.StatusMsg({"error": "boom", "interrupted": True})
     msg_no_error = p.StatusMsg({"error": "", "interrupted": False})
-    _assert(p.StateEvent.should_show_error(msg_error) is True, "error + not interrupted should show")
-    _assert(p.StateEvent.should_show_error(msg_interrupted) is False, "interrupted should not show error")
-    _assert(p.StateEvent.should_show_error(msg_no_error) is False, "no error should not show")
+    _assert(st.StateEvent.should_show_error(msg_error) is True, "error + not interrupted should show")
+    _assert(st.StateEvent.should_show_error(msg_interrupted) is False, "interrupted should not show error")
+    _assert(st.StateEvent.should_show_error(msg_no_error) is False, "no error should not show")
     print("  ok  StateEvent.should_show_error()")
 
 
@@ -48,9 +49,9 @@ def test_should_skip_error():
     msg_skip = p.StatusMsg({"error": "boom", "interrupted": True})
     msg_no_skip1 = p.StatusMsg({"error": "boom", "interrupted": False})
     msg_no_skip2 = p.StatusMsg({"error": "", "interrupted": True})
-    _assert(p.StateEvent.should_skip_error(msg_skip) is True, "interrupted + error should skip")
-    _assert(p.StateEvent.should_skip_error(msg_no_skip1) is False, "error without interrupt should not skip")
-    _assert(p.StateEvent.should_skip_error(msg_no_skip2) is False, "interrupt without error should not skip")
+    _assert(st.StateEvent.should_skip_error(msg_skip) is True, "interrupted + error should skip")
+    _assert(st.StateEvent.should_skip_error(msg_no_skip1) is False, "error without interrupt should not skip")
+    _assert(st.StateEvent.should_skip_error(msg_no_skip2) is False, "interrupt without error should not skip")
     print("  ok  StateEvent.should_skip_error()")
 
 
@@ -59,18 +60,18 @@ def test_get_base_state():
     msg_working = p.StatusMsg({"waiting": 0, "running": 1})
     msg_idle = p.StatusMsg({"waiting": 0, "running": 0})
     msg_both = p.StatusMsg({"waiting": 2, "running": 3})  # waiting 优先
-    _assert(p.StateEvent.get_base_state(msg_pending) == p.PENDING, "waiting>0 should be PENDING")
-    _assert(p.StateEvent.get_base_state(msg_working) == p.WORKING, "running>0 should be WORKING")
-    _assert(p.StateEvent.get_base_state(msg_idle) == p.IDLE, "both 0 should be IDLE")
-    _assert(p.StateEvent.get_base_state(msg_both) == p.PENDING, "waiting takes priority over running")
+    _assert(st.StateEvent.get_base_state(msg_pending) == st.PENDING, "waiting>0 should be PENDING")
+    _assert(st.StateEvent.get_base_state(msg_working) == st.WORKING, "running>0 should be WORKING")
+    _assert(st.StateEvent.get_base_state(msg_idle) == st.IDLE, "both 0 should be IDLE")
+    _assert(st.StateEvent.get_base_state(msg_both) == st.PENDING, "waiting takes priority over running")
     print("  ok  StateEvent.get_base_state()")
 
 
 def test_needs_approval():
     msg_yes = p.StatusMsg({"prompt": {"id": "t1", "tool": "Bash", "hint": "rm -rf /"}})
     msg_no = p.StatusMsg({"prompt": None})
-    _assert(p.StateEvent.needs_approval(msg_yes) is True, "prompt dict should need approval")
-    _assert(p.StateEvent.needs_approval(msg_no) is False, "prompt None should not need approval")
+    _assert(st.StateEvent.needs_approval(msg_yes) is True, "prompt dict should need approval")
+    _assert(st.StateEvent.needs_approval(msg_no) is False, "prompt None should not need approval")
     print("  ok  StateEvent.needs_approval()")
 
 
@@ -79,10 +80,10 @@ def test_is_idle():
     msg_running = p.StatusMsg({"running": 1, "waiting": 0})
     msg_waiting = p.StatusMsg({"running": 0, "waiting": 1})
     msg_both = p.StatusMsg({"running": 1, "waiting": 1})
-    _assert(p.StateEvent.is_idle(msg_idle) is True, "running=0 waiting=0 should be idle")
-    _assert(p.StateEvent.is_idle(msg_running) is False, "running>0 should not be idle")
-    _assert(p.StateEvent.is_idle(msg_waiting) is False, "waiting>0 should not be idle")
-    _assert(p.StateEvent.is_idle(msg_both) is False, "both>0 should not be idle")
+    _assert(st.StateEvent.is_idle(msg_idle) is True, "running=0 waiting=0 should be idle")
+    _assert(st.StateEvent.is_idle(msg_running) is False, "running>0 should not be idle")
+    _assert(st.StateEvent.is_idle(msg_waiting) is False, "waiting>0 should not be idle")
+    _assert(st.StateEvent.is_idle(msg_both) is False, "both>0 should not be idle")
     print("  ok  StateEvent.is_idle()")
 
 
@@ -245,7 +246,7 @@ def test_parse_multi_session_msg():
     s1 = result.sessions[1]
     _assert(s1.id == "sess-bbb", f"s1.id should be 'sess-bbb', got {s1.id!r}")
     _assert(s1.waiting == 1, "s1.waiting should be 1")
-    _assert(p.StateEvent.needs_approval(s1) is True, "s1 should need approval")
+    _assert(st.StateEvent.needs_approval(s1) is True, "s1 should need approval")
     print("  ok  parse() MultiSessionMsg (2 sessions)")
 
 
@@ -295,12 +296,12 @@ def test_state_event_with_session_status():
     s_done    = p.SessionStatus({"completed": True})
     s_err     = p.SessionStatus({"error": "boom", "interrupted": False})
 
-    _assert(p.StateEvent.get_base_state(s_pending) == p.PENDING, "pending session should be PENDING")
-    _assert(p.StateEvent.get_base_state(s_working) == p.WORKING, "working session should be WORKING")
-    _assert(p.StateEvent.get_base_state(s_idle) == p.IDLE, "idle session should be IDLE")
-    _assert(p.StateEvent.needs_approval(s_approve) is True, "should need approval")
-    _assert(p.StateEvent.should_celebrate(s_done) is True, "should celebrate")
-    _assert(p.StateEvent.should_show_error(s_err) is True, "should show error")
+    _assert(st.StateEvent.get_base_state(s_pending) == st.PENDING, "pending session should be PENDING")
+    _assert(st.StateEvent.get_base_state(s_working) == st.WORKING, "working session should be WORKING")
+    _assert(st.StateEvent.get_base_state(s_idle) == st.IDLE, "idle session should be IDLE")
+    _assert(st.StateEvent.needs_approval(s_approve) is True, "should need approval")
+    _assert(st.StateEvent.should_celebrate(s_done) is True, "should celebrate")
+    _assert(st.StateEvent.should_show_error(s_err) is True, "should show error")
     print("  ok  StateEvent methods work with SessionStatus")
 
 

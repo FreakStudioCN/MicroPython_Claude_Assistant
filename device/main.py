@@ -5,11 +5,12 @@ except ImportError:
 
 import ble_uart
 import protocol as p
+import state as st
 
 STATE_NAME = {
-    p.SLEEP: "SLEEP", p.IDLE: "IDLE", p.WORKING: "WORKING",
-    p.PENDING: "PENDING", p.CELEBRATE: "CELEBRATE",
-    p.ERROR: "ERROR", p.APPROVED: "APPROVED",
+    st.SLEEP: "SLEEP", st.IDLE: "IDLE", st.WORKING: "WORKING",
+    st.PENDING: "PENDING", st.CELEBRATE: "CELEBRATE",
+    st.ERROR: "ERROR", st.APPROVED: "APPROVED",
 }
 
 
@@ -25,14 +26,14 @@ def _print_status(s):
     print(f"  error       = {s.error!r}")
     print(f"  interrupted = {s.interrupted}")
     print(f"  prompt      = {s.prompt}")
-    state = p.StateEvent.get_base_state(s)
+    state = st.StateEvent.get_base_state(s)
     print(f"  [StateEvent]")
     print(f"    base_state      = {STATE_NAME.get(state, state)}")
-    print(f"    needs_approval  = {p.StateEvent.needs_approval(s)}")
-    print(f"    should_celebrate= {p.StateEvent.should_celebrate(s)}")
-    print(f"    should_show_err = {p.StateEvent.should_show_error(s)}")
-    print(f"    should_skip_err = {p.StateEvent.should_skip_error(s)}")
-    if p.StateEvent.needs_approval(s):
+    print(f"    needs_approval  = {st.StateEvent.needs_approval(s)}")
+    print(f"    should_celebrate= {st.StateEvent.should_celebrate(s)}")
+    print(f"    should_show_err = {st.StateEvent.should_show_error(s)}")
+    print(f"    should_skip_err = {st.StateEvent.should_skip_error(s)}")
+    if st.StateEvent.needs_approval(s):
         print(f"  !! Approval request:")
         print(f"     tool = {s.prompt.get('tool','?')}")
         print(f"     hint = {s.prompt.get('hint','')[:60]}")
@@ -87,12 +88,11 @@ async def ble_task():
             _print_msg(msg)
 
             if isinstance(msg, p.MultiSessionMsg):
-                # 找第一个需要审批的 session
                 for s in msg.sessions:
-                    if p.StateEvent.needs_approval(s):
+                    if st.StateEvent.needs_approval(s):
                         await _handle_approval(s.prompt, s.prompt["id"])
                         break
-            elif isinstance(msg, p.StatusMsg) and p.StateEvent.needs_approval(msg):
+            elif isinstance(msg, p.StatusMsg) and st.StateEvent.needs_approval(msg):
                 # 旧格式兼容
                 await _handle_approval(msg.prompt, msg.prompt["id"])
 
