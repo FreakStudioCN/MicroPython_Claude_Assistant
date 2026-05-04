@@ -12,8 +12,8 @@ MicroPython_Claude_Assistant/
 │   ├── ble_daemon.py    # TCP↔BLE 桥接，状态机，推送到设备
 │   └── hook_bridge.py   # Claude Code Hook 接收，规范化为 v2 envelope
 ├── device/          # ESP32 固件层
-│   ├── main.py          # 主程序，3 个 asyncio 任务
-│   ├── main_mvp.py      # 早期 MVP 版本
+│   ├── main.py          # 调试测试用（BLE 收发 + 串口 print，无 UI）
+│   ├── main_mvp.py      # 完整版（LVGL 渲染 + 触摸审批 + 状态机动画）
 │   ├── ble_uart.py      # BLE NUS 驱动，20B MTU 分包
 │   ├── display.py       # LVGL + SPI 屏幕 + I2C 触摸屏
 │   ├── buddy.py         # 角色动画控制器
@@ -22,13 +22,16 @@ MicroPython_Claude_Assistant/
 │   ├── protocol.py      # PC↔ESP32 消息协议
 │   └── config.py        # 硬件引脚与全局常量
 ├── scripts/         # 调试工具
+│   ├── sim_hooks.py     # 手动集成测试：模拟完整 turn 的 hook 触发链路
 │   ├── hook_probe.py    # 一次性 Hook 采样（用完删除）
 │   ├── ble_test_send.py # PC 端 BLE 手动测试
 │   └── test_recv.py     # ESP32 端 BLE 收发测试
 ├── tests/           # 单元测试
-│   ├── test_daemon_state.py       # daemon 状态机时序测试
+│   ├── test_protocol.py           # protocol 单元测试（21 用例）
+│   ├── test_daemon_state.py       # daemon 状态机时序测试（14 用例）
 │   ├── test_daemon_concurrency.py # daemon 并发压测
 │   ├── test_hook_normalize.py     # hook_bridge 规范化测试
+│   ├── test_e2e_stub.py           # E2E 联动测试（无需设备，--stub 模式）
 │   └── fixtures/probe_samples/    # 8 类真实 Hook payload 样本
 └── research/        # 设计文档
     ├── hook_to_device_mapping_v1.md
@@ -56,53 +59,42 @@ Claude Code
 
 ## PC → ESP32 消息协议（wire 格式）
 
-### 当前版本（v1，6 字段）
+### 当前版本（v3，sessions 数组）
 
 ```json
 {
-  "running":   1,
-  "waiting":   0,
-  "completed": false,
-  "msg":       "Bash: ls -la",
-  "tokens":    0,
-  "prompt":    {"id": "cli-req", "tool": "Bash", "hint": "ls -la"}
+  "v": 2,
+  "sessions": [
+    {
+      "id":          "SESSION-",
+      "running":     1,
+      "waiting":     0,
+      "completed":   false,
+      "msg":         "Bash: ls -la",
+      "category":    "exec",
+      "error":       "",
+      "interrupted": false,
+      "prompt":      {"id": "toolu_xxx", "tool": "Bash", "hint": "ls -la"}
+    }
+  ]
 }
 ```
+
+`sessions` 数组只含活跃 session（有工具运行，或近 10s 内有活动）。多个 Claude Code 实例并发时每个 session 独立出现在数组中。
 
 | 字段 | 类型 | 含义 |
 |------|------|------|
-| `running` | int | 当前正在执行的工具数，>0 设备显示 BUSY |
-| `waiting` | int | 等待审批的工具数，>0 设备显示 ATTENTION |
-| `completed` | bool | 任务刚完成，触发 CELEBRATE 动画 |
+| `id` | str | session_id 前 8 字符 |
+| `running` | int | 当前正在执行的工具数，>0 设备显示 WORKING |
+| `waiting` | int | 等待审批的工具数，>0 设备显示 PENDING |
+| `completed` | bool | 任务刚完成，触发 CELEBRATE 动画（持续 2s） |
 | `msg` | str | 屏幕底部显示文字 |
-| `tokens` | int | 本轮 token 数（当前恒为 0，未实现） |
-| `prompt` | dict\|null | 非 null 时显示审批界面 |
+| `category` | str | 工具类别：exec/edit/read/web/agent/other/"" |
+| `error` | str | 最近一次错误原文（截断 80 字），ERROR 状态下显示 |
+| `interrupted` | bool | true = 用户主动 Ctrl+C，设备跳过 ERROR 直接回 IDLE |
+| `prompt` | dict\|null | 非 null 时显示审批界面，含 `id/tool/hint` |
 
-### 规划版本（v2，9 字段）
-
-在 v1 基础上新增 3 个字段：
-
-```json
-{
-  "running":     1,
-  "waiting":     0,
-  "completed":   false,
-  "msg":         "Bash: ls -la",
-  "tokens":      0,
-  "prompt":      null,
-  "category":    "exec",
-  "error":       "",
-  "interrupted": false
-}
-```
-
-| 新增字段 | 类型 | 来源 | 含义 |
-|---------|------|------|------|
-| `category` | str | `tool_category` | 工具类别：exec/edit/read/web/agent/other/""，设备可据此区分显示 |
-| `error` | str | `error_msg` / `error` | 最近一次错误原文（截断 80 字），DIZZY 状态下显示具体原因 |
-| `interrupted` | bool | `is_interrupt` | true = 用户主动 Ctrl+C，设备跳过 DIZZY 直接回 IDLE |
-
-**不加 `agent_depth` 的原因**：SubagentStart hook 没有对应的 SubagentStop 被观测到触发，深度只能增不能减，数值不可靠。改为 daemon 内部维护 `_has_subagent` 标志，影响 `completed` 推断阈值（有子 Agent 时从 4s 延长到 8s），不暴露到 wire。
+**关于 `agent_depth` 未暴露的原因**：SubagentStart hook 没有对应的 SubagentStop 被观测到触发，深度只能增不能减，数值不可靠。改为 daemon 内部维护 `has_subagent` 标志，影响 `completed` 推断阈值（有子 Agent 时从 4s 延长到 8s），不暴露到 wire。
 
 ---
 
@@ -199,58 +191,47 @@ Claude Code
 
 ## hook_bridge 当前已知问题
 
-### 问题 1：PostToolUse 中 `interrupted` 字段被遗漏
+> 以下 4 个问题已在 v2.0 中全部修复，保留记录供参考。
 
-fixture 实测 `PostToolUse` 的 `tool_response` 中存在 `interrupted` 字段：
-```json
-"tool_response": {
-  "interrupted": false,
-  ...
-}
-```
-但 `_normalize_post_tool` 完全没有提取它，导致"工具正常返回但实际是被中断的"这种情况无法识别。当前 `is_interrupt` 只从 `PostToolUseFailure` 中提取，覆盖不完整。
+### ~~问题 1：PostToolUse 中 `interrupted` 字段被遗漏~~（已修复）
 
-**修复方向**：`_normalize_post_tool` 中补充提取 `event.get("tool_response", {}).get("interrupted", False)`。
+`_normalize_post_tool` 补充提取 `event.get("tool_response", {}).get("interrupted", False)`，现在"工具正常返回但实际是被中断"可正确识别。
 
-### 问题 2：`_hint_from_tool_input` 回退可能暴露敏感内容
+### ~~问题 2：`_hint_from_tool_input` 回退可能暴露敏感内容~~（已修复）
 
-当 `tool_input` 中没有任何已知 key（command/file_path/pattern/url/description）时，回退为：
-```python
-return str(tool_input)[:80]
-```
-这会把完整的 dict 序列化后截断显示，可能包含环境变量、密钥路径等敏感信息。
+无已知 key 时回退改为返回空串 `""`，不再序列化完整 dict。
 
-**修复方向**：回退改为返回空串 `""`。
+### ~~问题 3：截断长度不统一~~（已修复）
 
-### 问题 3：截断长度不统一
+所有文本字段（error_msg / message / error / last_assistant_message / prompt）统一截断为 80 字。
 
-| 字段 | 截断长度 |
-|------|---------|
-| `summary`（hint） | 80 字 |
-| `prompt` | 80 字 |
-| `error_msg` | 200 字 |
-| `message` | 200 字 |
-| `error` / `last_assistant_message` | 200 字 |
+### 问题 4：NotebookEdit 不在 APPROVAL_TOOLS 中（设计选择）
 
-设备屏幕实际只能显示约 20-30 字，200 字的截断传到 BLE 浪费带宽。建议统一为 80 字。
-
-### 问题 4：NotebookEdit 不在 APPROVAL_TOOLS 中
-
-`NotebookEdit` 归类为 `edit`，但不需要审批，与 `Write`/`Edit` 行为不一致。这是设计选择，但未在代码中说明原因。
+`NotebookEdit` 归类为 `edit`，但不需要审批。原因已在 `hook_bridge.py` 中注释说明：notebook 编辑危险性低于直接文件写入，且 cell 输出可在 Claude Code UI 中直接查看，无需额外硬件确认。
 
 ---
 
 ## 运行测试
 
 ```bash
-# hook_bridge 规范化测试（6 组，无需设备）
+# protocol 单元测试（21 用例，无需设备）
+python tests/test_protocol.py
+
+# hook_bridge 规范化测试（7 组，无需设备）
 python tests/test_hook_normalize.py
 
-# daemon 状态机时序测试（7 组，无需设备）
+# daemon 状态机时序测试（14 组，无需设备）
 python tests/test_daemon_state.py
+
+# E2E 联动测试：8 种 hook → daemon --stub → protocol（无需设备）
+python tests/test_e2e_stub.py
 
 # daemon 并发压测（3 组，会启动真实 stub daemon）
 python tests/test_daemon_concurrency.py
+
+# 手动集成测试：模拟完整 turn，需要 ESP32 或加 --stub
+python scripts/sim_hooks.py --stub     # 无设备
+python scripts/sim_hooks.py            # 真设备（需 ESP32 已开机）
 ```
 
 ---
@@ -277,3 +258,13 @@ python daemon/ble_daemon.py --stub   # stub 模式（无设备测试）
 
 ### ESP32 端
 将 `device/` 目录下所有文件烧录到 ESP32，重启后自动运行。
+
+---
+
+## 变更记录
+
+| 版本 | 日期 | 内容 |
+|------|------|------|
+| v1.0 | 2026-04-27 | 初始版本：v1 wire（6字段），hook_bridge 接收层，daemon 状态机，基础测试 |
+| v2.0 | 2026-05-03 | wire 升级为 v2（9字段，+category/error/interrupted）；ble_daemon 状态机重构为 _tools 字典；修复 4 个 hook_bridge 已知问题；新增 test_protocol（17用例）、test_e2e_stub（E2E联动，无需设备）；daemon 状态机测试扩充至 13 用例 |
+| v3.0 | 2026-05-04 | wire 升级为 v3（sessions 数组）；ble_daemon 全局状态 → per-session _Session，修复多实例并发 approval 竞争；protocol 新增 SessionStatus / MultiSessionMsg；test_protocol 扩充至 21 用例，test_daemon_state 扩充至 14 用例；新增 sim_hooks.py 手动集成测试；Windows 进程清理修复 |

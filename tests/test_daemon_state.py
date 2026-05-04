@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 # tests/test_daemon_state.py
-# Daemon 状态机时序单测 (v2 - 基于 _tools 字典)
+# Daemon 状态机时序单测 (v3 - per-session _Session 对象)
 #
 # 跑法: 在仓库根 `python tests/test_daemon_state.py` 退出码 0 = pass。
 #
 # 策略: mock time.time + 替换 _send 捕获 wire, 直接驱动 _handle_envelope 与
 #       _pusher_tick (从 _pusher_task 抽出的单次迭代函数), 不起真 socket。
 #
+# 所有 envelope 使用 session_id="s"，通过 _sess() / _wire_sess() 访问 per-session 状态。
+#
 # 覆盖:
-#   1. tool_start → tool_done 基本 wire 演化 (9 字段)
+#   1. tool_start → tool_done 基本 wire 演化 (sessions 数组)
 #   2. task_complete 推断: 4s 静默触发一次, 不重复推
 #   3. tool_error 后跨过 dizzy 也不被庆祝 (codex P2 bug 1)
 #   4. task_error (StopFailure) 同上 (codex P2 bug 1 task variant)
 #   5. approval deny / timeout 后不被立刻庆祝 (codex P2 bug 2)
-#   6. user_prompt 清 completed pulse + 清 _has_subagent
+#   6. user_prompt 清 completed pulse + 清 has_subagent
 #   7. 5Hz 节流: 同 wire 不重复推
-#   8. subagent_start 设置 _has_subagent, completed 阈值变 8s
-#   9. 并行工具: 多个 tool_use_id 同时在 _tools 中
-#   10. v2 wire 9 字段: category/error/interrupted
+#   8. subagent_start 设置 has_subagent, completed 阈值变 8s
+#   9. 并行工具: 多个 tool_use_id 同时在 tools 中
+#   10. wire sessions 字段: category/error/interrupted
 
 import asyncio
 import os
@@ -51,22 +53,31 @@ async def _capture_send(payload):
     _sent_wires.append(dict(payload))
 
 
-# ── reset all daemon globals ───────────────────────────
+# ── per-session helpers ────────────────────────────────
+def _sess():
+    """返回测试用 session 's' 的 _Session 对象（envelope 发送后才存在）。"""
+    return d._sessions.get("s")
+
+
+def _wire_sess(wire=None):
+    """从最后一条（或指定）wire 中取第一个 session 字段 dict。"""
+    w = wire if wire is not None else (_sent_wires[-1] if _sent_wires else {})
+    sessions = w.get("sessions", [])
+    return sessions[0] if sessions else {}
+
+
+def _any_completed(wires=None):
+    """统计 wires 中有任意 session completed=True 的条数。"""
+    ws = wires if wires is not None else _sent_wires
+    return sum(1 for w in ws
+               if any(s.get("completed") for s in w.get("sessions", [])))
+
+
+# ── reset all daemon state ─────────────────────────────
 def _reset():
-    d._tools.clear()
-    d._approval_queue.clear()
-    d._has_subagent = False
-    d._current_error = ""
-    d._current_interrupted = False
+    d._sessions.clear()
     d._dirty = False
-    d._last_activity_ts = 0.0
-    d._completed_until = 0.0
-    d._completed_inferred_for_ts = 0.0
-    d._dizzy_until = 0.0
-    d._approval_in_progress = False
-    d._decision_value = None
-    d._decision_event = asyncio.Event()  # 新 loop 上的新 event
-    d._stub = True  # 默认 stub, 个别 test override
+    d._stub = True
     _sent_wires.clear()
     _set(100.0)
 
@@ -131,17 +142,17 @@ async def test_basic_busy_idle():
     last = None
     await d._handle_envelope(_env_pre("Read", "/etc/hosts", tool_use_id="t1", category="read"))
     last = await d._pusher_tick(last)
-    _assert(len(d._tools) == 1, f"_tools should have 1 entry, got {len(d._tools)}")
-    _assert(_sent_wires[-1]["running"] == 1, "wire running != 1")
-    _assert(_sent_wires[-1]["category"] == "read", "wire category != read")
-    _assert("Read" in _sent_wires[-1]["msg"], "msg missing tool name")
+    _assert(len(_sess().tools) == 1, f"tools should have 1 entry, got {len(_sess().tools)}")
+    _assert(_wire_sess()["running"] == 1, "wire running != 1")
+    _assert(_wire_sess()["category"] == "read", "wire category != read")
+    _assert("Read" in _wire_sess()["msg"], "msg missing tool name")
 
     _adv(0.5)
     await d._handle_envelope(_env_post("Read", tool_use_id="t1"))
     last = await d._pusher_tick(last)
-    _assert(len(d._tools) == 0, "tools should be empty")
-    _assert(_sent_wires[-1]["running"] == 0, "wire running != 0")
-    print("  ok  basic busy→idle, wire 9 fields correct")
+    _assert(len(_sess().tools) == 0, "tools should be empty")
+    _assert(_wire_sess()["running"] == 0, "wire running != 0")
+    print("  ok  basic busy→idle, wire sessions fields correct")
 
 
 async def test_task_complete_one_shot():
@@ -154,14 +165,14 @@ async def test_task_complete_one_shot():
 
     _adv(4.1)  # 跨 TASK_COMPLETE_QUIET_S
     last = await d._pusher_tick(last)
-    n = sum(1 for w in _sent_wires if w.get("completed"))
+    n = _any_completed()
     _assert(n == 1, f"expected 1 completed pulse, got {n}")
 
-    # 再多 tick, _last_activity_ts 没变, 不应再推
+    # 再多 tick, last_activity_ts 没变, 不应再推
     for _ in range(20):
         _adv(0.4)
         last = await d._pusher_tick(last)
-    n2 = sum(1 for w in _sent_wires if w.get("completed"))
+    n2 = _any_completed()
     _assert(n2 == 1, f"should NOT re-fire, got {n2}")
     print(f"  ok  task_complete one-shot (1 pulse over {20*0.4 + 4.1:.1f}s)")
 
@@ -174,14 +185,14 @@ async def test_tool_error_no_celebrate():
     _adv(0.3)
     await d._handle_envelope(_env_post_fail("Read", tool_use_id="t1"))
     last = await d._pusher_tick(last)
-    _assert("error" in _sent_wires[-1]["msg"], "should show error msg")
-    _assert(_sent_wires[-1]["error"] == "boom", "error field should be 'boom'")
+    _assert("error" in _wire_sess()["msg"], "should show error msg")
+    _assert(_wire_sess()["error"] == "boom", "error field should be 'boom'")
 
     # 跨 DIZZY (3s) + QUIET (4s) = 7s, 旧 bug 在此时推 completed
     for _ in range(20):
         _adv(0.4)
         last = await d._pusher_tick(last)
-    n = sum(1 for w in _sent_wires if w.get("completed"))
+    n = _any_completed()
     _assert(n == 0, f"tool_error 后不应庆祝, 推了 {n} 次")
     print("  ok  tool_error 跨 dizzy 8s 后无 completed (codex P2 bug 1)")
 
@@ -192,12 +203,12 @@ async def test_task_error_no_celebrate():
     last = None
     await d._handle_envelope(_env_task_error())
     last = await d._pusher_tick(last)
-    _assert(_sent_wires[-1]["error"] == "API timeout", "error field should be set")
+    _assert(_wire_sess()["error"] == "API timeout", "error field should be set")
 
     for _ in range(20):
         _adv(0.4)
         last = await d._pusher_tick(last)
-    n = sum(1 for w in _sent_wires if w.get("completed"))
+    n = _any_completed()
     _assert(n == 0, f"task_error 后不应庆祝, 推了 {n} 次")
     print("  ok  task_error 跨 dizzy 8s 后无 completed (codex P2 bug 1 task)")
 
@@ -213,11 +224,12 @@ async def test_approval_deny_no_celebrate():
         resp = await d._handle_envelope(env)
         _assert(resp.get("decision") == "deny", f"expected deny, got {resp}")
 
-        # _last_activity_ts 应被刷到 wait 之后的 mock clock 值 (仍 100.0)
-        _assert(d._last_activity_ts == 100.0,
-                f"_last_activity_ts not refreshed: {d._last_activity_ts}")
-        # _completed_inferred_for_ts 应锁住等于 _last_activity_ts
-        _assert(d._completed_inferred_for_ts == d._last_activity_ts,
+        sess = _sess()
+        # last_activity_ts 应被刷到 wait 之后的 mock clock 值 (仍 100.0)
+        _assert(sess.last_activity_ts == 100.0,
+                f"last_activity_ts not refreshed: {sess.last_activity_ts}")
+        # completed_inferred_for_ts 应锁住等于 last_activity_ts
+        _assert(sess.completed_inferred_for_ts == sess.last_activity_ts,
                 "deny path should lock inference guard")
 
         # 时间快进 100s, pusher 不应推 completed
@@ -225,7 +237,7 @@ async def test_approval_deny_no_celebrate():
         last = None
         for _ in range(5):
             last = await d._pusher_tick(last)
-        n = sum(1 for w in _sent_wires if w.get("completed"))
+        n = _any_completed()
         _assert(n == 0, f"deny 后跨 100s 也不应庆祝, 推了 {n} 次")
     finally:
         d.APPROVAL_TIMEOUT_S = orig_to
@@ -240,15 +252,15 @@ async def test_user_prompt_clears_completed():
     await d._handle_envelope(_env_post("Read", tool_use_id="t1"))
     _adv(4.1)
     last = await d._pusher_tick(last)
-    _assert(d._completed_until > 0, "should be in completed state")
+    _assert(_sess().completed_until > 0, "should be in completed state")
 
     # 设置 subagent 标志
-    d._has_subagent = True
+    _sess().has_subagent = True
     await d._handle_envelope(_env_user_prompt())
-    _assert(d._completed_until == 0.0,
-            f"user_prompt 应清 completed_until, got {d._completed_until}")
-    _assert(d._has_subagent is False, "user_prompt 应清 _has_subagent")
-    print("  ok  user_prompt clears completed pulse + _has_subagent")
+    _assert(_sess().completed_until == 0.0,
+            f"user_prompt 应清 completed_until, got {_sess().completed_until}")
+    _assert(_sess().has_subagent is False, "user_prompt 应清 has_subagent")
+    print("  ok  user_prompt clears completed pulse + has_subagent")
 
 
 async def test_throttle_no_dup_push():
@@ -268,11 +280,11 @@ async def test_throttle_no_dup_push():
 
 
 async def test_subagent_threshold():
-    """subagent_start 设置 _has_subagent, completed 阈值从 4s 变 8s。"""
+    """subagent_start 设置 has_subagent, completed 阈值从 4s 变 8s。"""
     _reset()
     last = None
     await d._handle_envelope(_env_subagent_start())
-    _assert(d._has_subagent is True, "_has_subagent should be True")
+    _assert(_sess().has_subagent is True, "has_subagent should be True")
 
     await d._handle_envelope(_env_pre("Read", tool_use_id="t1"))
     _adv(0.3)
@@ -282,19 +294,19 @@ async def test_subagent_threshold():
     # 4.1s 后不应触发 (阈值是 8s)
     _adv(4.1)
     last = await d._pusher_tick(last)
-    n1 = sum(1 for w in _sent_wires if w.get("completed"))
+    n1 = _any_completed()
     _assert(n1 == 0, f"4.1s 后不应 completed (阈值 8s), got {n1}")
 
     # 再过 4s (总共 8.1s) 应触发
     _adv(4.0)
     last = await d._pusher_tick(last)
-    n2 = sum(1 for w in _sent_wires if w.get("completed"))
+    n2 = _any_completed()
     _assert(n2 == 1, f"8.1s 后应 completed, got {n2}")
     print("  ok  subagent_start → completed threshold 8s (not 4s)")
 
 
 async def test_parallel_tools():
-    """多个 tool_use_id 同时在 _tools 中, running 计数正确。"""
+    """多个 tool_use_id 同时在 tools 中, running 计数正确。"""
     _reset()
     last = None
     await d._handle_envelope(_env_pre("Read", tool_use_id="t1", category="read"))
@@ -302,45 +314,45 @@ async def test_parallel_tools():
     await d._handle_envelope(_env_pre("Glob", tool_use_id="t3", category="read"))
     last = await d._pusher_tick(last)
 
-    _assert(len(d._tools) == 3, f"should have 3 tools, got {len(d._tools)}")
-    _assert(_sent_wires[-1]["running"] == 3, f"running should be 3, got {_sent_wires[-1]['running']}")
+    _assert(len(_sess().tools) == 3, f"should have 3 tools, got {len(_sess().tools)}")
+    _assert(_wire_sess()["running"] == 3, f"running should be 3, got {_wire_sess()['running']}")
 
     # 完成一个
     await d._handle_envelope(_env_post("Read", tool_use_id="t1"))
     last = await d._pusher_tick(last)
-    _assert(len(d._tools) == 2, f"should have 2 tools, got {len(d._tools)}")
-    _assert(_sent_wires[-1]["running"] == 2, f"running should be 2, got {_sent_wires[-1]['running']}")
+    _assert(len(_sess().tools) == 2, f"should have 2 tools, got {len(_sess().tools)}")
+    _assert(_wire_sess()["running"] == 2, f"running should be 2, got {_wire_sess()['running']}")
 
     # 完成剩余
     await d._handle_envelope(_env_post("Bash", tool_use_id="t2"))
     await d._handle_envelope(_env_post("Glob", tool_use_id="t3"))
     last = await d._pusher_tick(last)
-    _assert(len(d._tools) == 0, "all tools should be done")
-    _assert(_sent_wires[-1]["running"] == 0, "running should be 0")
+    _assert(len(_sess().tools) == 0, "all tools should be done")
+    _assert(_wire_sess()["running"] == 0, "running should be 0")
     print("  ok  parallel tools: 3 tools → running=3, 逐个完成计数正确")
 
 
-async def test_wire_v2_fields():
-    """验证 v2 wire 9 字段: category/error/interrupted。"""
+async def test_wire_sessions_fields():
+    """验证 wire sessions 字段: category/error/interrupted。"""
     _reset()
     last = None
     await d._handle_envelope(_env_pre("Bash", "ls -la", tool_use_id="t1", category="exec"))
     last = await d._pusher_tick(last)
-    w = _sent_wires[-1]
-    _assert("category" in w, "wire missing category")
-    _assert(w["category"] == "exec", f"category should be exec, got {w['category']}")
-    _assert("error" in w, "wire missing error")
-    _assert(w["error"] == "", "error should be empty")
-    _assert("interrupted" in w, "wire missing interrupted")
-    _assert(w["interrupted"] is False, "interrupted should be False")
+    ws = _wire_sess()
+    _assert("category" in ws, "wire session missing category")
+    _assert(ws["category"] == "exec", f"category should be exec, got {ws['category']}")
+    _assert("error" in ws, "wire session missing error")
+    _assert(ws["error"] == "", "error should be empty")
+    _assert("interrupted" in ws, "wire session missing interrupted")
+    _assert(ws["interrupted"] is False, "interrupted should be False")
 
     # tool_error 设置 error
     await d._handle_envelope(_env_post_fail("Bash", tool_use_id="t1", is_interrupt=True))
     last = await d._pusher_tick(last)
-    w2 = _sent_wires[-1]
-    _assert(w2["error"] == "boom", f"error should be 'boom', got {w2['error']}")
-    _assert(w2["interrupted"] is True, f"interrupted should be True, got {w2['interrupted']}")
-    print("  ok  v2 wire 9 fields: category/error/interrupted 正确")
+    ws2 = _wire_sess()
+    _assert(ws2["error"] == "boom", f"error should be 'boom', got {ws2['error']}")
+    _assert(ws2["interrupted"] is True, f"interrupted should be True, got {ws2['interrupted']}")
+    print("  ok  wire sessions fields: category/error/interrupted 正确")
 
 
 async def test_interrupted_skips_error_state():
@@ -354,19 +366,19 @@ async def test_interrupted_skips_error_state():
     await d._handle_envelope(_env_post_fail("Bash", tool_use_id="t1", is_interrupt=True))
     last = await d._pusher_tick(last)
 
-    # 验证：_dizzy_until 应该是 0（不触发 DIZZY）
-    _assert(d._dizzy_until == 0.0, f"_dizzy_until should be 0, got {d._dizzy_until}")
+    # 验证：dizzy_until 应该是 0（不触发 DIZZY）
+    _assert(_sess().dizzy_until == 0.0, f"dizzy_until should be 0, got {_sess().dizzy_until}")
     # wire 中 msg 不应该是 "error"
-    _assert(_sent_wires[-1]["msg"] != "error", f"msg should not be 'error', got {_sent_wires[-1]['msg']}")
+    _assert(_wire_sess()["msg"] != "error", f"msg should not be 'error', got {_wire_sess()['msg']}")
     # interrupted 应该是 True
-    _assert(_sent_wires[-1]["interrupted"] is True, "interrupted should be True")
+    _assert(_wire_sess()["interrupted"] is True, "interrupted should be True")
     # error 字段应该有值
-    _assert(_sent_wires[-1]["error"] == "boom", "error field should be 'boom'")
+    _assert(_wire_sess()["error"] == "boom", "error field should be 'boom'")
     print("  ok  interrupted=True 跳过 DIZZY 状态 (bug fix 2)")
 
 
 async def test_tool_done_interrupted_propagates():
-    """⚡ Bug fix 1: tool_done 的 interrupted 值应该传递到 _current_interrupted。"""
+    """⚡ Bug fix 1: tool_done 的 interrupted 值应该传递到 current_interrupted。"""
     _reset()
     last = None
     await d._handle_envelope(_env_pre("Bash", "sleep 10", tool_use_id="t1", category="exec"))
@@ -376,10 +388,11 @@ async def test_tool_done_interrupted_propagates():
     await d._handle_envelope(_env_post("Bash", tool_use_id="t1", interrupted=True))
     last = await d._pusher_tick(last)
 
-    # 验证：_current_interrupted 应该是 True（不是写死的 False）
-    _assert(d._current_interrupted is True, f"_current_interrupted should be True, got {d._current_interrupted}")
+    # 验证：current_interrupted 应该是 True（不是写死的 False）
+    _assert(_sess().current_interrupted is True,
+            f"current_interrupted should be True, got {_sess().current_interrupted}")
     # wire 中 interrupted 应该是 True
-    _assert(_sent_wires[-1]["interrupted"] is True, "wire interrupted should be True")
+    _assert(_wire_sess()["interrupted"] is True, "wire interrupted should be True")
     print("  ok  tool_done interrupted=True 正确传递 (bug fix 1)")
 
 
@@ -394,19 +407,57 @@ async def test_user_prompt_clears_error():
     last = await d._pusher_tick(last)
 
     # 验证错误状态已设置
-    _assert(d._current_error == "boom", "error should be set")
-    _assert(d._current_interrupted is False, "interrupted should be False")
+    _assert(_sess().current_error == "boom", "error should be set")
+    _assert(_sess().current_interrupted is False, "interrupted should be False")
 
     # 新 turn 开始：user_prompt
     await d._handle_envelope(_env_user_prompt())
     last = await d._pusher_tick(last)
 
     # 验证：错误状态应该被清除
-    _assert(d._current_error == "", f"_current_error should be cleared, got {d._current_error!r}")
-    _assert(d._current_interrupted is False, "_current_interrupted should be False")
+    _assert(_sess().current_error == "",
+            f"current_error should be cleared, got {_sess().current_error!r}")
+    _assert(_sess().current_interrupted is False, "current_interrupted should be False")
     # wire 中 error 应该是空
-    _assert(_sent_wires[-1]["error"] == "", "wire error should be empty")
+    _assert(_wire_sess()["error"] == "", "wire error should be empty")
     print("  ok  user_prompt 清除旧错误状态 (bug fix 3)")
+
+
+async def test_multi_session_isolation():
+    """v3 新增: 两个 session 状态互相隔离。"""
+    _reset()
+    last = None
+
+    # session "s" 发 tool_start
+    await d._handle_envelope(_env_pre("Read", tool_use_id="t1", category="read"))
+
+    # session "s2" 发 tool_error
+    env_err = {"type": "event", "v": 2,
+               "event": {"kind": "tool_error", "tool": "Bash", "error_msg": "s2-err",
+                         "is_interrupt": False, "duration_ms": 0, "tool_use_id": "t2"},
+               "generic": {"session_id": "s2", "cwd": "/x", "transcript_path": "/x.j",
+                            "hook_event_name": "X", "permission_mode": "auto"}}
+    await d._handle_envelope(env_err)
+    last = await d._pusher_tick(last)
+
+    # wire 应包含两个 session
+    sessions = _sent_wires[-1].get("sessions", [])
+    _assert(len(sessions) == 2, f"should have 2 sessions in wire, got {len(sessions)}")
+
+    # 找到各自的 session
+    s_wire = next((s for s in sessions if s["id"] == "s"), None)
+    s2_wire = next((s for s in sessions if s["id"] == "s2"), None)
+    _assert(s_wire is not None, "session 's' missing from wire")
+    _assert(s2_wire is not None, "session 's2' missing from wire")
+
+    # s: running=1, no error
+    _assert(s_wire["running"] == 1, f"s running should be 1, got {s_wire['running']}")
+    _assert(s_wire["error"] == "", f"s error should be empty, got {s_wire['error']}")
+
+    # s2: running=0, error set
+    _assert(s2_wire["running"] == 0, f"s2 running should be 0, got {s2_wire['running']}")
+    _assert(s2_wire["error"] == "s2-err", f"s2 error should be 's2-err', got {s2_wire['error']}")
+    print("  ok  multi-session isolation: 两个 session 状态互不干扰")
 
 
 async def main():
@@ -426,12 +477,13 @@ async def main():
         test_throttle_no_dup_push,
         test_subagent_threshold,
         test_parallel_tools,
-        test_wire_v2_fields,
+        test_wire_sessions_fields,
         test_interrupted_skips_error_state,
         test_tool_done_interrupted_propagates,
         test_user_prompt_clears_error,
+        test_multi_session_isolation,
     ]
-    print(f"running {len(tests)} daemon state tests (v2)...")
+    print(f"running {len(tests)} daemon state tests (v3 per-session)...")
     try:
         for t in tests:
             print(f"\n[{t.__name__}]")

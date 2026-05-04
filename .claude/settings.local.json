@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(kill %1)",
+      "Bash(netstat -ano)",
+      "Bash(findstr 57320)",
+      "Bash(tasklist *)",
+      "Bash(wmic process *)",
+      "Bash(taskkill *)"
+    ]
+  }
+}

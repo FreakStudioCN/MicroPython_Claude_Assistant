@@ -1,8 +1,10 @@
 import asyncio
+import time
 import lvgl as lv
 import ble_uart
 import protocol
 import state as st
+import buddy
 from display import Screen
 from config import FPS
 
@@ -26,12 +28,13 @@ async def ble_task():
             if msg is None:
                 continue
             if isinstance(msg, dict):
-                pass
+                cmd = msg.get("cmd")
+                if cmd in ("name", "owner", "unpair"):
+                    await ble_uart.send(protocol.build_ack(cmd))
             else:
                 _last_msg = msg.msg
                 _state.update(msg)
                 _approval_pending = bool(msg.prompt)
-                print("[ble] pending:", _approval_pending)
 
 
 async def touch_task():
@@ -39,15 +42,11 @@ async def touch_task():
     _tapped = [False]
 
     def _on_tap(e):
-        if _approval_pending:
-            _tapped[0] = True
-            print("[touch] tap!")
+        _tapped[0] = True
 
-    lv.screen_active().add_event_cb(_on_tap, lv.EVENT.PRESSED, None)
+    lv.screen_active().add_event_cb(_on_tap, lv.EVENT.RELEASED, None)
 
     while True:
-        if _tapped[0]:
-            print(f"[touch] check: pending={_approval_pending} prompt={_state.pending_prompt}")
         if _tapped[0] and _approval_pending and _state.pending_prompt:
             _tapped[0] = False
             await ble_uart.send(
@@ -60,16 +59,14 @@ async def touch_task():
 
 
 async def render_task():
-    import buddy
     interval = 1000 // FPS
-    import time
     t0 = time.time()
     while True:
         _state.tick()
         if _approval_pending and _state.pending_prompt:
             p = _state.pending_prompt
             secs = max(0, 30 - (time.time() - t0))
-            _screen.draw_approval(p.get("tool","?"), p.get("hint",""), int(secs))
+            _screen.draw_approval(p.get("tool", "?"), p.get("hint", ""), int(secs))
         else:
             t0 = time.time()
             buddy.tick(_screen, _state.active, _last_msg, ble_uart.connected())

@@ -1,91 +1,102 @@
-import asyncio
-import time
-import lvgl as lv
-import ble_uart
-import protocol
-import state as st
-import buddy
-from display import Screen
-from config import FPS
+try:
+    import uasyncio as asyncio
+except ImportError:
+    import asyncio
 
-_state            = st.State()
-_screen           = Screen()
-_approval_pending = False
-_last_msg         = ""
+import ble_uart
+import protocol as p
+
+STATE_NAME = {
+    p.SLEEP: "SLEEP", p.IDLE: "IDLE", p.WORKING: "WORKING",
+    p.PENDING: "PENDING", p.CELEBRATE: "CELEBRATE",
+    p.ERROR: "ERROR", p.APPROVED: "APPROVED",
+}
+
+
+def _print_status(s):
+    """打印单个 session 或旧 StatusMsg 的字段（两者字段相同）。"""
+    sid = getattr(s, "id", "—")
+    print(f"  id          = {sid}")
+    print(f"  running     = {s.running}")
+    print(f"  waiting     = {s.waiting}")
+    print(f"  completed   = {s.completed}")
+    print(f"  msg         = {s.msg!r}")
+    print(f"  category    = {s.category!r}")
+    print(f"  error       = {s.error!r}")
+    print(f"  interrupted = {s.interrupted}")
+    print(f"  prompt      = {s.prompt}")
+    state = p.StateEvent.get_base_state(s)
+    print(f"  [StateEvent]")
+    print(f"    base_state      = {STATE_NAME.get(state, state)}")
+    print(f"    needs_approval  = {p.StateEvent.needs_approval(s)}")
+    print(f"    should_celebrate= {p.StateEvent.should_celebrate(s)}")
+    print(f"    should_show_err = {p.StateEvent.should_show_error(s)}")
+    print(f"    should_skip_err = {p.StateEvent.should_skip_error(s)}")
+    if p.StateEvent.needs_approval(s):
+        print(f"  !! Approval request:")
+        print(f"     tool = {s.prompt.get('tool','?')}")
+        print(f"     hint = {s.prompt.get('hint','')[:60]}")
+        print(f"     id   = {s.prompt.get('id','?')}")
+
+
+def _print_msg(msg):
+    if msg is None:
+        print("[parse] None — skipped")
+        return
+    if isinstance(msg, dict):
+        print(f"[ack/cmd] {msg}")
+        return
+    if isinstance(msg, p.MultiSessionMsg):
+        print(f"[MultiSessionMsg] {len(msg.sessions)} session(s):")
+        print("─" * 48)
+        for s in msg.sessions:
+            _print_status(s)
+            print("·" * 24)
+        print("─" * 48)
+        return
+    # 旧 StatusMsg（向后兼容）
+    print("[StatusMsg] (legacy single-session):")
+    print("─" * 48)
+    _print_status(msg)
+    print("─" * 48)
+
+
+async def _handle_approval(prompt, tool_id):
+    print("  Input y=approve / n=deny, then Enter: ", end="")
+    try:
+        choice = input().strip().lower()
+    except Exception:
+        choice = "n"
+    decision = "once" if choice == "y" else ("session" if choice == "s" else "deny")
+    reply = p.build_decision(tool_id, decision)
+    await ble_uart.send(reply)
+    print(f"  → sent decision='{decision}'")
 
 
 async def ble_task():
-    global _approval_pending, _last_msg
     while True:
+        print("[ble] waiting for PC connection...")
         await ble_uart.advertise()
-        print("[ble] connected")
+        print(f"[ble] connected")
         while ble_uart.connected():
             try:
                 line = await asyncio.wait_for(ble_uart.recv_line(), timeout=None)
             except asyncio.TimeoutError:
                 break
-            msg = protocol.parse(line)
-            if msg is None:
-                continue
-            if isinstance(msg, dict):
-                cmd = msg.get("cmd")
-                if cmd in ("name", "owner", "unpair"):
-                    await ble_uart.send(protocol.build_ack(cmd))
-            else:
-                _last_msg = msg.msg
-                _state.update(msg)
-                _approval_pending = bool(msg.prompt)
+            msg = p.parse(line)
+            _print_msg(msg)
+
+            if isinstance(msg, p.MultiSessionMsg):
+                # 找第一个需要审批的 session
+                for s in msg.sessions:
+                    if p.StateEvent.needs_approval(s):
+                        await _handle_approval(s.prompt, s.prompt["id"])
+                        break
+            elif isinstance(msg, p.StatusMsg) and p.StateEvent.needs_approval(msg):
+                # 旧格式兼容
+                await _handle_approval(msg.prompt, msg.prompt["id"])
+
+        print("[ble] disconnected")
 
 
-async def touch_task():
-    global _approval_pending
-    _tapped = [False]
-
-    def _on_tap(e):
-        _tapped[0] = True
-
-    lv.screen_active().add_event_cb(_on_tap, lv.EVENT.RELEASED, None)
-
-    while True:
-        if _tapped[0] and _approval_pending and _state.pending_prompt:
-            _tapped[0] = False
-            await ble_uart.send(
-                protocol.build_decision(_state.pending_prompt["id"], "once")
-            )
-            _approval_pending = False
-            _state.set_heart()
-            print("[touch] approved")
-        await asyncio.sleep_ms(50)
-
-
-async def render_task():
-    interval = 1000 // FPS
-    t0 = time.time()
-    while True:
-        _state.tick()
-        if _approval_pending and _state.pending_prompt:
-            p = _state.pending_prompt
-            secs = max(0, 30 - (time.time() - t0))
-            _screen.draw_approval(p.get("tool", "?"), p.get("hint", ""), int(secs))
-        else:
-            t0 = time.time()
-            buddy.tick(_screen, _state.active, _last_msg, ble_uart.connected())
-        await asyncio.sleep_ms(interval)
-
-
-async def _safe(coro, name):
-    try:
-        await coro
-    except Exception as e:
-        print(f"[{name}] error: {e}")
-        import sys; sys.print_exception(e)
-
-
-async def main():
-    await asyncio.gather(
-        _safe(ble_task(), "ble"),
-        _safe(touch_task(), "touch"),
-        _safe(render_task(), "render"),
-    )
-
-asyncio.run(main())
+asyncio.run(ble_task())

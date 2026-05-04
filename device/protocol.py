@@ -3,12 +3,14 @@
 #
 # 所有消息均为换行符结尾的 JSON 字符串，通过 BLE NUS 传输。
 #
-# PC → 设备（状态推送，v2 wire，9 字段）：
-#   {"running": 1, "waiting": 0, "completed": false,
-#    "msg": "显示文字", "tokens": 0,
-#    "prompt": {"id": "toolu_xxx", "tool": "Bash", "hint": "命令内容"},
-#    "category": "exec", "error": "", "interrupted": false}
-#   其中 prompt 字段存在时表示需要用户审批。
+# PC → 设备（v3 多 session wire）：
+#   {"v": 2, "sessions": [
+#     {"id": "sess1234", "running": 1, "waiting": 0, "completed": false,
+#      "msg": "Bash: ls", "category": "exec", "error": "", "interrupted": false,
+#      "prompt": {"id": "toolu_xxx", "tool": "Bash", "hint": "命令内容"}}
+#   ]}
+#   sessions 数组只含活跃 session（有工具运行，或近 10s 内有活动）。
+#   prompt 字段非 null 时表示该 session 有工具等待审批。
 #
 # 设备 → PC（审批决策）：
 #   {"cmd": "permission", "id": "toolu_xxx", "decision": "once"}
@@ -19,6 +21,8 @@
 #
 # 设备 → PC（命令应答）：
 #   {"ack": "name", "ok": true}
+#
+# 向后兼容：parse() 仍能解析旧 v2 单 session wire（无 sessions 字段）返回 StatusMsg
 # ============================================================
 
 try:
@@ -110,26 +114,48 @@ class StatusMsg:
         self.interrupted = d.get("interrupted", False)
 
 
+class SessionStatus:
+    """v3 wire 中单个 session 的状态字段（与 StatusMsg 字段名相同，多了 id）。"""
+    def __init__(self, d: dict):
+        self.id          = d.get("id", "")
+        self.running     = d.get("running", 0)
+        self.waiting     = d.get("waiting", 0)
+        self.completed   = d.get("completed", False)
+        self.msg         = d.get("msg", "")
+        self.prompt      = d.get("prompt")
+        self.category    = d.get("category", "")
+        self.error       = d.get("error", "")
+        self.interrupted = d.get("interrupted", False)
+
+
+class MultiSessionMsg:
+    """v3 wire 消息：包含所有活跃 session 的状态数组。"""
+    def __init__(self, sessions: list):
+        self.sessions = [SessionStatus(s) for s in sessions]
+
+
 def parse(line: str):
     """
     解析 BLE 收到的一行 JSON 文本。
 
     返回值：
-      - StatusMsg 对象：普通状态消息（无 "cmd" 字段）
+      - MultiSessionMsg 对象：v3 多 session 状态消息（含 "sessions" 字段）
+      - StatusMsg 对象：旧 v2 单 session 状态消息（向后兼容）
       - dict：控制命令（含 "cmd" 字段，如 "name"/"owner"/"unpair"）
       - None：JSON 解析失败（忽略该行）
     """
     try:
         d = ujson.loads(line)
     except Exception:
-        # 收到非法 JSON（如 BLE 分包粘包导致的乱码），直接丢弃
         return None
 
     if "cmd" in d:
-        # 含 cmd 字段 → 控制命令，原样返回字典交给上层处理
         return d
 
-    # 普通状态消息 → 封装为 StatusMsg
+    if "sessions" in d:
+        return MultiSessionMsg(d["sessions"])
+
+    # 旧 v2 wire 向后兼容
     return StatusMsg(d)
 
 

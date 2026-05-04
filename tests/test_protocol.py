@@ -220,6 +220,90 @@ def test_status_msg_empty_dict():
     print("  ok  StatusMsg empty dict uses all defaults")
 
 
+# ── MultiSessionMsg / SessionStatus 测试 ──────────────────
+def test_parse_multi_session_msg():
+    """parse() 识别 sessions 字段，返回 MultiSessionMsg。"""
+    line = json.dumps({
+        "v": 2,
+        "sessions": [
+            {"id": "sess-aaa", "running": 1, "waiting": 0, "completed": False,
+             "msg": "Bash: ls", "category": "exec", "error": "", "interrupted": False,
+             "prompt": None},
+            {"id": "sess-bbb", "running": 0, "waiting": 1, "completed": False,
+             "msg": "approve: Write", "category": "edit", "error": "", "interrupted": False,
+             "prompt": {"id": "t2", "tool": "Write", "hint": "main.py"}},
+        ]
+    })
+    result = p.parse(line)
+    _assert(isinstance(result, p.MultiSessionMsg), f"should return MultiSessionMsg, got {type(result)}")
+    _assert(len(result.sessions) == 2, f"should have 2 sessions, got {len(result.sessions)}")
+    s0 = result.sessions[0]
+    _assert(s0.id == "sess-aaa", f"s0.id should be 'sess-aaa', got {s0.id!r}")
+    _assert(s0.running == 1, "s0.running should be 1")
+    _assert(s0.waiting == 0, "s0.waiting should be 0")
+    _assert(s0.category == "exec", "s0.category should be exec")
+    s1 = result.sessions[1]
+    _assert(s1.id == "sess-bbb", f"s1.id should be 'sess-bbb', got {s1.id!r}")
+    _assert(s1.waiting == 1, "s1.waiting should be 1")
+    _assert(p.StateEvent.needs_approval(s1) is True, "s1 should need approval")
+    print("  ok  parse() MultiSessionMsg (2 sessions)")
+
+
+def test_parse_multi_session_empty():
+    """sessions 数组为空时返回 MultiSessionMsg(sessions=[])。"""
+    line = json.dumps({"v": 2, "sessions": []})
+    result = p.parse(line)
+    _assert(isinstance(result, p.MultiSessionMsg), "should return MultiSessionMsg")
+    _assert(len(result.sessions) == 0, "sessions should be empty")
+    print("  ok  parse() MultiSessionMsg empty sessions")
+
+
+def test_session_status_fields():
+    """SessionStatus 字段提取和默认值。"""
+    d = {
+        "id": "abc12345",
+        "running": 2, "waiting": 1, "completed": True,
+        "msg": "Bash: ls", "category": "exec",
+        "error": "timeout", "interrupted": True,
+        "prompt": {"id": "t1", "tool": "Bash", "hint": "ls"},
+    }
+    s = p.SessionStatus(d)
+    _assert(s.id == "abc12345", "id should match")
+    _assert(s.running == 2, "running should be 2")
+    _assert(s.waiting == 1, "waiting should be 1")
+    _assert(s.completed is True, "completed should be True")
+    _assert(s.msg == "Bash: ls", "msg should match")
+    _assert(s.category == "exec", "category should be exec")
+    _assert(s.error == "timeout", "error should match")
+    _assert(s.interrupted is True, "interrupted should be True")
+    _assert(s.prompt["tool"] == "Bash", "prompt.tool should be Bash")
+
+    # 默认值
+    s_empty = p.SessionStatus({})
+    _assert(s_empty.id == "", "id default should be empty")
+    _assert(s_empty.running == 0, "running default should be 0")
+    _assert(s_empty.prompt is None, "prompt default should be None")
+    print("  ok  SessionStatus fields + defaults")
+
+
+def test_state_event_with_session_status():
+    """StateEvent 方法对 SessionStatus 同样适用（接口相同）。"""
+    s_pending = p.SessionStatus({"waiting": 1, "running": 0})
+    s_working = p.SessionStatus({"waiting": 0, "running": 2})
+    s_idle    = p.SessionStatus({"waiting": 0, "running": 0})
+    s_approve = p.SessionStatus({"prompt": {"id": "t1", "tool": "Bash", "hint": ""}})
+    s_done    = p.SessionStatus({"completed": True})
+    s_err     = p.SessionStatus({"error": "boom", "interrupted": False})
+
+    _assert(p.StateEvent.get_base_state(s_pending) == p.PENDING, "pending session should be PENDING")
+    _assert(p.StateEvent.get_base_state(s_working) == p.WORKING, "working session should be WORKING")
+    _assert(p.StateEvent.get_base_state(s_idle) == p.IDLE, "idle session should be IDLE")
+    _assert(p.StateEvent.needs_approval(s_approve) is True, "should need approval")
+    _assert(p.StateEvent.should_celebrate(s_done) is True, "should celebrate")
+    _assert(p.StateEvent.should_show_error(s_err) is True, "should show error")
+    print("  ok  StateEvent methods work with SessionStatus")
+
+
 # ── 主函数 ─────────────────────────────────────────────────
 def main():
     tests = [
@@ -245,6 +329,11 @@ def main():
         # StatusMsg 类（2 个测试）
         test_status_msg_full_fields,
         test_status_msg_empty_dict,
+        # MultiSessionMsg / SessionStatus（4 个测试）
+        test_parse_multi_session_msg,
+        test_parse_multi_session_empty,
+        test_session_status_fields,
+        test_state_event_with_session_status,
     ]
     print(f"running {len(tests)} protocol.py tests...")
     try:

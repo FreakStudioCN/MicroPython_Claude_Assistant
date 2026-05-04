@@ -86,7 +86,7 @@ async def recv_line() -> str:
         conn, data = await _rx.written(timeout_ms=None)
         print(f"[ble] chunk t={time.time()} len={len(data)} data={data}")
         _buf += data
-        print(f"[ble] buf len={len(_buf)} has_newline={b'\\n' in _buf}")
+        print(f"[ble] buf len={len(_buf)} has_newline={b'\n' in _buf}")
 
         if b"\n" in _buf:
             line, _buf = _buf.split(b"\n", 1)

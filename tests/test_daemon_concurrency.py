@@ -172,11 +172,26 @@ async def main():
         print(f"\n{'='*50}\n  ALL CONCURRENCY TESTS PASSED ({len(tests)})")
         return 0
     finally:
-        proc.terminate()
+        # Windows 上 terminate() 不可靠，用 taskkill /F 强制终止
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)],
+                           capture_output=True)
+        except Exception:
+            proc.kill()
         try:
             proc.wait(timeout=3.0)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            pass
+        # 等端口释放，避免紧接着运行的测试绑定失败
+        deadline = __import__('time').time() + 10.0
+        while __import__('time').time() < deadline:
+            try:
+                import socket as _s
+                c = _s.create_connection((HOST, PORT), timeout=0.3)
+                c.close()
+                __import__('time').sleep(0.3)
+            except OSError:
+                break
 
 
 if __name__ == "__main__":

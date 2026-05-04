@@ -4,6 +4,10 @@
 **目的**: 决定哪些 hook 事件 / 字段值得传给 BLE 设备，怎么传
 **前置**: 现状只用了 `PreToolUse` / `PostToolUse` / `Stop` 三个事件，从 `tool_input` 只取了 `command` / `path`
 
+> **实施状态（2026-05-03）**：本文档的 v2 协议草案已落地。wire 格式已升级为 9 字段（running/waiting/completed/msg/tokens/prompt/category/error/interrupted），ble_daemon 状态机已重构为基于 `_tools` 字典的 v2 实现。"落地优先序"三步已全部完成。详见 README.md v2.0 变更记录。
+>
+> **实施状态（2026-05-04）**：wire 进一步升级为 v3 sessions 数组格式（`{"v":2,"sessions":[{id,running,waiting,...}]}`）。ble_daemon 全局状态机拆分为 per-session `_Session` 对象，支持多 Claude Code 实例并发，修复 approval 竞争问题。protocol.py 新增 `SessionStatus` / `MultiSessionMsg`，`parse()` 向后兼容旧 v2 格式。详见 README.md v3.0 变更记录。
+
 ---
 
 ## TL;DR：v2 协议建议加 4 类信号
@@ -219,3 +223,13 @@ PostToolUseFailure / TaskCreated / TaskCompleted / WorktreeCreate / WorktreeRemo
 ## 来源
 
 同 install_mechanism_v1.md，subagent 转述 docs.claude.com / code.claude.com 文档。所有事件 / 字段在落地前必须自己打开官方文档复核一次。
+
+---
+
+## 变更记录
+
+| 版本 | 日期 | 内容 |
+|------|------|------|
+| v1.0 | 2026-04-27 | 初始设计文档，v2 协议草案，落地优先序 |
+| v1.1 | 2026-05-03 | 追加实施状态说明：v2 协议已落地，三步优先序已全部完成 |
+| v1.2 | 2026-05-04 | 追加实施状态说明：v3 sessions 数组格式已落地，per-session 状态机已实现 |

@@ -86,6 +86,16 @@ def _read_new_stub_lines(log_path: str, offset: int):
 
 
 def _fmt_msg(msg) -> str:
+    if isinstance(msg, p.MultiSessionMsg):
+        parts = []
+        for s in msg.sessions:
+            parts.append(
+                f"Session(id={s.id!r} running={s.running}, waiting={s.waiting}, "
+                f"completed={s.completed}, msg={s.msg!r}, "
+                f"category={s.category!r}, error={s.error!r}, "
+                f"interrupted={s.interrupted})"
+            )
+        return " | ".join(parts) if parts else "MultiSessionMsg(empty)"
     if isinstance(msg, p.StatusMsg):
         return (f"StatusMsg(running={msg.running}, waiting={msg.waiting}, "
                 f"completed={msg.completed}, msg={msg.msg!r}, "
@@ -93,13 +103,30 @@ def _fmt_msg(msg) -> str:
                 f"interrupted={msg.interrupted})")
     if isinstance(msg, dict):
         return f"cmd dict: {msg}"
-    return f"parse→None"
+    return "parse→None"
+
+
+def _wait_port_free(timeout=30.0) -> bool:
+    """等待 57320 端口释放（上一个测试的 daemon 可能还未完全退出）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            s = socket.create_connection((HOST, PORT), timeout=0.3)
+            s.close()
+            time.sleep(0.5)  # 端口仍被占用，继续等
+        except OSError:
+            return True  # 连接失败 = 端口已释放
+    return False
 
 
 async def main():
     log = os.path.join(tempfile.gettempdir(), "test_e2e_stub.log")
     if os.path.exists(log):
         os.remove(log)
+
+    if not _wait_port_free(timeout=30.0):
+        print("FAIL: 57320 端口 30s 内未释放，请先停止其他 daemon 进程")
+        return 1
 
     proc = subprocess.Popen(
         [sys.executable, "-u", DAEMON_PATH, "--stub"],
@@ -174,11 +201,16 @@ async def main():
         return 0 if all_ok else 1
 
     finally:
-        proc.terminate()
+        # Windows 上 terminate() 不可靠，用 taskkill /F 强制终止
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)],
+                           capture_output=True)
+        except Exception:
+            proc.kill()
         try:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            pass
 
 
 if __name__ == "__main__":
