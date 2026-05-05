@@ -74,24 +74,20 @@ async def recv_line() -> str:
     异步接收一行文本（以 '\\n' 为边界）。
     BLE 数据可能被分成多个 20 字节的包到达，此函数负责拼合。
 
-    工作原理：
-      1. 循环调用 _rx.written()，每次得到一段二进制数据
-      2. 追加到 _buf 缓冲区
-      3. 发现 '\\n' 后，切分并返回第一行（剩余部分留在 _buf）
-
-    注意：timeout_ms=None 表示无限等待，由 main.py 的 asyncio.wait_for 控制超时。
+    注意：chunk 级 debug print 已移除，避免 UART FIFO 阻塞导致 aioble 队列满丢包。
+    只在收到完整行后打印一条摘要。
     """
     global _buf
+    chunks = 0
     while True:
         conn, data = await _rx.written(timeout_ms=None)
-        print(f"[ble] chunk t={time.time()} len={len(data)} data={data}")
         _buf += data
-        print(f"[ble] buf len={len(_buf)} has_newline={b'\n' in _buf}")
+        chunks += 1
 
         if b"\n" in _buf:
             line, _buf = _buf.split(b"\n", 1)
             decoded = line.decode().strip()
-            print(f"[ble] recv complete t={time.time()}: {decoded[:80]}")
+            print(f"[ble] recv t={time.time()} chunks={chunks} len={len(decoded)} : {decoded[:60]}")
             return decoded
 
 

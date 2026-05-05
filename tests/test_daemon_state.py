@@ -78,6 +78,7 @@ def _reset():
     d._sessions.clear()
     d._dirty = False
     d._stub = True
+    d._device_online = True  # 测试默认设备在线
     _sent_wires.clear()
     _set(100.0)
 
@@ -89,11 +90,11 @@ def _g():
     }
 
 
-def _env_pre(tool, summary="", needs_approval=False, tool_use_id="t1", category="read"):
+def _env_pre(tool, summary="", needs_approval=False, tool_use_id="t1", category="read", risk_level="normal"):
     return {"type": "event", "v": 2,
             "event": {"kind": "tool_start", "tool": tool, "summary": summary,
                       "needs_approval": needs_approval, "tool_use_id": tool_use_id,
-                      "tool_category": category},
+                      "tool_category": category, "risk_level": risk_level},
             "generic": _g()}
 
 

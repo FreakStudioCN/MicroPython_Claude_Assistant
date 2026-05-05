@@ -44,6 +44,38 @@ SEND_SEQUENCE = [
     ("StopFailure",        "StopFailure.json",         None),
 ]
 
+# 离线风险分级测试序列（需配合 --offline-risk 使用）
+# 期望结果：
+#   safe  → auto-approve（无需人工干预）
+#   normal → auto-approve（无需人工干预）
+#   critical → CLI 提示用户输入（需要人工确认）
+OFFLINE_RISK_SEQUENCE = [
+    # safe：Read 工具 → 自动批准
+    ("PreToolUse(safe/Read)",          "PreToolUse_safe.json",          None),
+    ("PostToolUse(safe/Read)",         "PostToolUse.json",              {"tool_name": "Read",  "tool_use_id": "toolu_FIXTURE_SAFE01",
+                                                                          "tool_response": {"interrupted": False}}),
+    # normal：Bash ls → 自动批准
+    ("PreToolUse(normal/Bash-ls)",     "PreToolUse_normal_bash.json",   None),
+    ("PostToolUse(normal/Bash-ls)",    "PostToolUse.json",              {"tool_name": "Bash",  "tool_use_id": "toolu_FIXTURE_NORM01",
+                                                                          "tool_response": {"interrupted": False}}),
+    # normal：Write 普通文件 → 自动批准
+    ("PreToolUse(normal/Write)",       "PreToolUse_normal_write.json",  None),
+    ("PostToolUse(normal/Write)",      "PostToolUse.json",              {"tool_name": "Write", "tool_use_id": "toolu_FIXTURE_NORM02",
+                                                                          "tool_response": {"interrupted": False}}),
+    # critical：Bash rm -rf → CLI 提示（需人工输入 y/n）
+    ("PreToolUse(critical/Bash-rmrf)", "PreToolUse_critical_bash.json", None),
+    ("PostToolUse(critical/Bash)",     "PostToolUse.json",              {"tool_name": "Bash",  "tool_use_id": "toolu_FIXTURE_CRIT01",
+                                                                          "tool_response": {"interrupted": False}}),
+    # critical：Write .env → CLI 提示（需人工输入 y/n）
+    ("PreToolUse(critical/Write-env)", "PreToolUse_critical_write.json",None),
+    ("PostToolUse(critical/Write)",    "PostToolUse.json",              {"tool_name": "Write", "tool_use_id": "toolu_FIXTURE_CRIT02",
+                                                                          "tool_response": {"interrupted": False}}),
+    # critical：Edit .git/config → CLI 提示（需人工输入 y/n）
+    ("PreToolUse(critical/Edit-git)",  "PreToolUse_critical_edit.json", None),
+    ("PostToolUse(critical/Edit)",     "PostToolUse.json",              {"tool_name": "Edit",  "tool_use_id": "toolu_FIXTURE_CRIT03",
+                                                                          "tool_response": {"interrupted": False}}),
+]
+
 
 def _wait_listen(timeout=8.0) -> bool:
     deadline = time.time() + timeout
@@ -58,14 +90,22 @@ def _wait_listen(timeout=8.0) -> bool:
 
 
 def _wait_ble_connected(log_path: str, timeout=60.0) -> bool:
-    """轮询 daemon 日志，等待出现 [daemon] connected 表示 BLE 已连上 ESP32。"""
+    """
+    轮询 daemon 日志，检测当前 BLE 是否在线。
+    用 rfind 比较最后一条 connected 与 disconnected 的位置，
+    确保检测的是当前状态而非历史记录。
+    """
     deadline = time.time() + timeout
     dots = 0
     while time.time() < deadline:
         try:
             with open(log_path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
-            if "[daemon] connected" in content:
+            last_conn = content.rfind("[daemon] connected")
+            last_disc = content.rfind("[daemon] disconnected")
+            if last_conn >= 0 and last_conn > last_disc:
+                if dots > 0:
+                    print()  # 换行
                 return True
         except OSError:
             pass
@@ -118,24 +158,32 @@ def _send_hook(label: str, fixture_json: bytes, approval_step: bool) -> tuple[st
 
 def main():
     parser = argparse.ArgumentParser(description="模拟 Claude Code hook 触发，测试完整链路")
-    parser.add_argument("--stub",      action="store_true", help="以 --stub 模式启动 daemon（无设备测试）")
-    parser.add_argument("--no-daemon", action="store_true", help="daemon 已手动启动，跳过自动启动")
+    parser.add_argument("--stub",         action="store_true", help="以 --stub 模式启动 daemon（无设备测试）")
+    parser.add_argument("--no-daemon",    action="store_true", help="daemon 已手动启动，跳过自动启动")
+    parser.add_argument("--skip-ble-check", action="store_true", help="跳过 BLE 连接检测（daemon 已手动连接设备）")
+    parser.add_argument("--offline-risk", action="store_true",
+                        help="离线风险分级测试：以 --stub --offline 启动 daemon，跑 OFFLINE_RISK_SEQUENCE")
     args = parser.parse_args()
 
+    # --offline-risk 隐含 --stub（无设备），并强制 daemon 以 --offline 启动
+    offline_risk_mode = args.offline_risk
+
     # ── 1. 启动 daemon ────────────────────────────────────
+    import tempfile
+    LOG_PATH = os.path.join(tempfile.gettempdir(), "ble_daemon.log")
+
     daemon_proc = None
     if not args.no_daemon:
         if _wait_listen(timeout=1.0):
             print("[sim] daemon 已在运行，跳过自动启动")
         else:
-            cmd = [sys.executable, "-u", BLE_DAEMON]
-            if args.stub:
+            cmd = [sys.executable, "-u", BLE_DAEMON, "--log", LOG_PATH]
+            if args.stub or offline_risk_mode:
                 cmd.append("--stub")
-            import tempfile
-            log_path = os.path.join(tempfile.gettempdir(), "sim_hooks_daemon.log")
-            log_f = open(log_path, "w")
-            daemon_proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
-            print(f"[sim] 启动 daemon (stub={args.stub})，日志: {log_path}")
+            if offline_risk_mode:
+                cmd.append("--offline")
+            daemon_proc = subprocess.Popen(cmd)
+            print(f"[sim] 启动 daemon (stub={args.stub})，日志: {LOG_PATH}")
             if not _wait_listen(timeout=8.0):
                 print("[sim] FAIL: daemon 未能在 8s 内监听 57320，退出")
                 daemon_proc.terminate()
@@ -147,28 +195,37 @@ def main():
             print("[sim] WARN: --no-daemon 但 57320 不可达，hook_bridge 将 fail-open")
 
     # ── 2. 等待 BLE 连接（非 stub 模式）────────────────────
-    if not args.stub:
-        import tempfile
-        log_path = os.path.join(tempfile.gettempdir(), "sim_hooks_daemon.log")
-        print(f"[sim] 等待 ble_daemon 连上 ESP32（请先运行 ESP32 的 main_mvp.py）...")
-        if not _wait_ble_connected(log_path, timeout=90.0):
+    if not args.stub and not offline_risk_mode and not args.skip_ble_check:
+        print(f"[sim] 等待 ble_daemon 连上 ESP32（日志: {LOG_PATH}）...")
+        if not _wait_ble_connected(LOG_PATH, timeout=90.0):
             print("[sim] FAIL: 90s 内未检测到 BLE 连接，退出")
             if daemon_proc:
                 daemon_proc.terminate()
             sys.exit(1)
         print(f"\n[sim] BLE 已连接，开始发送事件")
+    elif args.skip_ble_check:
+        print(f"[sim] 跳过 BLE 连接检测（假设 daemon 已手动连接设备）")
 
-    print(f"\n[sim] 开始发送 {len(SEND_SEQUENCE)} 个 hook 事件\n{'─'*60}")
+    # ── 3. 选择测试序列 ───────────────────────────────────
+    if offline_risk_mode:
+        sequence = OFFLINE_RISK_SEQUENCE
+        print(f"\n[sim] 离线风险分级测试模式（设备强制离线）")
+        print(f"  safe/normal → 期望 auto-approve")
+        print(f"  critical    → 期望 CLI 提示（需人工输入 y/n）")
+    else:
+        sequence = SEND_SEQUENCE
 
-    # ── 2. 按顺序发送 ─────────────────────────────────────
+    print(f"\n[sim] 开始发送 {len(sequence)} 个 hook 事件\n{'─'*60}")
+
+    # ── 4. 按顺序发送 ─────────────────────────────────────
     try:
-        for label, filename, patch in SEND_SEQUENCE:
+        for label, filename, patch in sequence:
             print(f"\n[{label}]")
             raw = _load_fixture(filename, patch)
             fixture_json = json.dumps(raw, ensure_ascii=False).encode("utf-8")
 
-            # Bash PreToolUse 需要用户在设备上操作
-            is_approval = (label == "PreToolUse(Bash)") and not args.stub
+            # 在线模式下 Bash PreToolUse 需要用户在设备上操作
+            is_approval = (label == "PreToolUse(Bash)") and not args.stub and not offline_risk_mode
 
             try:
                 out, elapsed = _send_hook(label, fixture_json, is_approval)
@@ -184,10 +241,21 @@ def main():
             status = "DENY" if result.get("decision") == "deny" else ("ONCE" if result.get("decision") == "once" else "ok")
             print(f"  fixture  : {filename}{' + patch' if patch else ''}")
             print(f"  response : {result}  [{status}]  ({elapsed:.2f}s)")
-            time.sleep(0.3)
+
+            # 离线风险模式：标注期望结果
+            if offline_risk_mode and label.startswith("PreToolUse"):
+                if "(safe" in label or "(normal" in label:
+                    expected = "ONCE"
+                    ok = status == expected
+                    print(f"  expected : {expected}  {'✓ PASS' if ok else '✗ FAIL'}")
+                elif "(critical" in label:
+                    print(f"  expected : ONCE or DENY（取决于人工输入）")
+
+            # 模拟 Claude Code 真实节奏：工具间至少 1s（避免 BLE 推送过快导致设备丢包）
+            time.sleep(1.0)
 
         print(f"\n{'='*60}")
-        print(f"[sim] 全部 {len(SEND_SEQUENCE)} 个 hook 事件发送完毕")
+        print(f"[sim] 全部 {len(sequence)} 个 hook 事件发送完毕")
 
     finally:
         if daemon_proc is not None:

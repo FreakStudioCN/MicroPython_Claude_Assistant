@@ -48,6 +48,11 @@ COMPLETED_HOLD_S = 2.0         # completed=True 持续秒数 (覆盖 CELEBRATE 3
 DIZZY_HOLD_S = 3.0             # tool_error / task_error msg="error" 持续秒数
 SESSION_ACTIVE_TIMEOUT_S = 10.0  # 超过此时间无活动的 IDLE session 不纳入 wire
 SESSION_CLEANUP_S = 30.0         # 超过此时间清理 session 对象
+HEARTBEAT_INTERVAL_S = 10.0      # 心跳间隔
+HEARTBEAT_TIMEOUT_S = 30.0       # 3 次心跳未响应 → 判定离线
+POST_PING_COOLDOWN_S = 0.3       # ping 发出后屏蔽 BLE 推送的静默期（避免 pong 写入时丢包）
+MIN_PENDING_RESEND_S = 1.0       # PENDING 重发最小间隔（防止 200ms 连发淹没 BLE 队列）
+MAX_PENDING_RESENDS = 5          # 每次审批最多重发 5 次（之后认为设备已收到）
 
 # 设备 wire msg 字段值
 MSG_ERROR = "error"
@@ -71,6 +76,7 @@ class _Session:
         self.decision_event: Optional[asyncio.Event] = None  # 懒初始化
         self.decision_value: Optional[str] = None
         self.approval_in_progress: bool = False
+        self.pending_resend_count: int = 0  # 当前审批已重发次数
 
 
 _sessions: dict = {}   # session_id → _Session
@@ -78,12 +84,19 @@ _dirty = False         # 全局 dirty 标志（pusher 用）
 
 # ── stub 模式 ─────────────────────────────────────────────
 _stub = False
+_force_offline = False  # --offline 标志：强制 device_online=False，覆盖 stub 的在线假设
 
 # ── BLE 连接 ──────────────────────────────────────────────
 _client = None
 _connected = False
 _rx_buf = ""
-_lock = asyncio.Lock()
+_lock = None
+_send_lock = None        # 串行化所有 BLE 物理写入，防止分包交叉
+_device_online = False         # 心跳判定：设备是否在线
+_last_pong_ts = 0.0            # 最后一次收到 pong 的时间戳
+_last_ping_ts = 0.0            # 最后一次发出 ping 的时间戳（用于 POST_PING_COOLDOWN）
+_last_pending_send_ts = 0.0    # 最后一次推送 PENDING 状态的时间戳（用于 MIN_PENDING_RESEND）
+_last_pushed_wire = None       # 最后推送的 wire（pusher 和 approval 共享，防止重复推送）
 
 
 # ── BLE 层 ─────────────────────────────────────────────────
@@ -95,8 +108,9 @@ def _on_disconnect(client):
 
 def _on_notify(sender, data: bytearray):
     """设备 → PC: 接 {cmd:"permission", id, decision:"once|deny"} 解 approval。
-    广播给所有正在等待的 session 的 decision_event。"""
-    global _rx_buf
+    广播给所有正在等待的 session 的 decision_event。
+    同时处理 pong 心跳响应。"""
+    global _rx_buf, _last_pong_ts, _device_online
     _rx_buf += data.decode(errors="ignore")
     while "\n" in _rx_buf:
         line, _rx_buf = _rx_buf.split("\n", 1)
@@ -105,6 +119,16 @@ def _on_notify(sender, data: bytearray):
             continue
         try:
             msg = json.loads(line)
+
+            # 处理 pong 心跳
+            if msg.get("ack") == "pong":
+                _last_pong_ts = time.time()
+                if not _device_online:
+                    print("[heartbeat] device back online")
+                    _device_online = True
+                continue
+
+            # 处理审批决策
             if msg.get("cmd") == "permission":
                 decision = msg.get("decision", "deny")
                 prompt_id = msg.get("id", "")
@@ -127,7 +151,7 @@ def _on_notify(sender, data: bytearray):
 
 
 async def _connect_loop():
-    global _client, _connected
+    global _client, _connected, _device_online, _last_pong_ts
     if _stub:
         return
     from bleak import BleakClient, BleakScanner
@@ -149,12 +173,15 @@ async def _connect_loop():
             await _client.connect()
             await _client.start_notify(NUS_TX, _on_notify)
             _connected = True
+            _device_online = True  # 连接成功时标记在线
+            _last_pong_ts = time.time()
             print(f"[daemon] connected to {addr}")
             await asyncio.sleep(1.0)
         except Exception as e:
             print(f"[daemon] connect failed: {e}")
             _client = None
             _connected = False
+            _device_online = False
             await asyncio.sleep(3)
 
 
@@ -168,8 +195,42 @@ async def _send(payload: dict):
         return
     data = (json.dumps(payload) + "\n").encode()
     print(f"[send] t={time.time():.3f} {payload} ({len(data)}B)")
-    for i in range(0, len(data), 20):
-        await _client.write_gatt_char(NUS_RX, data[i:i+20], response=False)
+    async with _send_lock:
+        for i in range(0, len(data), 20):
+            await _client.write_gatt_char(NUS_RX, data[i:i+20], response=False)
+
+
+# ── 心跳任务 ───────────────────────────────────────────────
+def _resolve_pending_approvals_on_offline():
+    """设备掉线时，立刻按 risk_level 解决所有进行中的审批，避免卡到超时。"""
+    for sid, sess in _sessions.items():
+        if not sess.approval_in_progress or not sess.approval_queue:
+            continue
+        tid = sess.approval_queue[0]
+        risk = sess.tools.get(tid, {}).get("risk_level", "normal")
+        decision = "once" if risk in {"safe", "normal"} else "deny"
+        print(f"[heartbeat] offline → resolve approval {tid[:8]} risk={risk} → {decision}")
+        sess.decision_value = decision
+        if sess.decision_event:
+            sess.decision_event.set()
+
+
+async def _heartbeat_task():
+    """后台心跳任务：每 10s 发 ping，30s 无 pong 判定离线。"""
+    global _device_online, _last_pong_ts, _last_ping_ts
+    while True:
+        if _connected and not _stub:
+            _last_ping_ts = time.time()
+            await _send({"cmd": "ping", "ts": _last_ping_ts})
+            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+            now = time.time()
+            if now - _last_pong_ts > HEARTBEAT_TIMEOUT_S:
+                if _device_online:
+                    print("[heartbeat] device offline (no pong for 30s)")
+                    _device_online = False
+                    _resolve_pending_approvals_on_offline()
+        else:
+            await asyncio.sleep(1.0)
 
 
 # ── per-session 状态翻译 ───────────────────────────────────
@@ -252,6 +313,16 @@ def _mark_dirty():
     _dirty = True
 
 
+def _clear_dirty():
+    global _dirty
+    _dirty = False
+
+
+def _update_pending_send_ts():
+    global _last_pending_send_ts
+    _last_pending_send_ts = time.time()
+
+
 def _enter_error_state(sess: _Session, now: float, hard_reset: bool, error_msg: str, is_interrupt: bool) -> None:
     if hard_reset:
         sess.tools.clear()
@@ -268,7 +339,7 @@ def _enter_error_state(sess: _Session, now: float, hard_reset: bool, error_msg: 
 
 # ── 5Hz 推送 task ──────────────────────────────────────────
 async def _pusher_tick(last_pushed_wire):
-    global _dirty
+    global _dirty, _last_pushed_wire
 
     now = time.time()
 
@@ -303,11 +374,31 @@ async def _pusher_tick(last_pushed_wire):
                         _mark_dirty()
                         break
 
-    if _dirty:
+    # ping 刚发出时屏蔽推送，避免 ESP32 写 pong 期间丢包
+    in_cooldown = (now - _last_ping_ts) < POST_PING_COOLDOWN_S
+    if in_cooldown:
+        return last_pushed_wire
+
+    has_pending = any(sess.approval_queue for sess in _sessions.values())
+    # 1s 限速 + 最多重发 5 次：避免淹没 BLE 队列，5 次后认为设备已收到
+    pending_resend_due = (
+        has_pending
+        and (now - _last_pending_send_ts) >= MIN_PENDING_RESEND_S
+        and any(sess.pending_resend_count < MAX_PENDING_RESENDS
+                for sess in _sessions.values() if sess.approval_queue)
+    )
+
+    if _dirty or pending_resend_due:
         wire = _to_device_wire()
-        if wire != last_pushed_wire:
+        if wire != last_pushed_wire or pending_resend_due:
             await _send(wire)
             last_pushed_wire = wire
+            _last_pushed_wire = wire
+            if pending_resend_due:
+                _update_pending_send_ts()
+                for sess in _sessions.values():
+                    if sess.approval_queue:
+                        sess.pending_resend_count += 1
         _dirty = False
     return last_pushed_wire
 
@@ -338,6 +429,7 @@ async def _handle_envelope(env: dict) -> dict:
         tool_use_id = event.get("tool_use_id", "")
         category = event.get("tool_category", "")
         summary = event.get("summary", "")
+        risk_level = event.get("risk_level", "normal")
 
         if not tool_use_id:
             print(f"[warn] tool_start missing tool_use_id, ignoring")
@@ -349,6 +441,7 @@ async def _handle_envelope(env: dict) -> dict:
             "summary": summary,
             "status": "waiting" if event.get("needs_approval") else "running",
             "ts": now,
+            "risk_level": risk_level,
         }
         sess.last_activity_ts = now
 
@@ -356,12 +449,67 @@ async def _handle_envelope(env: dict) -> dict:
             _mark_dirty()
             return {"decision": "once"}
 
-        # approval path: 同步阻塞等设备
+        # approval path: 设备在线走设备审批，离线根据风险分级处理
         sess.approval_queue.append(tool_use_id)
         sess.approval_in_progress = True
         sess.decision_event.clear()
         sess.decision_value = None
+        sess.pending_resend_count = 0  # 新审批入队，重置重发计数
+
+        # stub 模式视为设备在线（用于测试），--offline 强制覆盖
+        # 用 _connected 而非 _device_online：BLE 已连接即可走设备审批，不依赖心跳时序
+        device_online = (_connected or _stub) and not _force_offline
+
+        # 设备离线 + 低/中风险 → 自动批准
+        if not device_online and risk_level in {"safe", "normal"}:
+            print(f"[approval] device offline, auto-approve {tool} (risk={risk_level})")
+            decision = "once"
+            if tool_use_id in sess.approval_queue:
+                sess.approval_queue.remove(tool_use_id)
+            sess.approval_in_progress = False
+            sess.last_activity_ts = time.time()
+            if tool_use_id in sess.tools:
+                sess.tools[tool_use_id]["status"] = "running"
+            _mark_dirty()
+            wire = _to_device_wire()
+            await _send(wire)
+            _last_pushed_wire = wire
+            _clear_dirty()
+            return {"decision": decision}
+
+        # 设备离线 + 高风险 → CLI 提示
+        if not device_online and risk_level == "critical":
+            print(f"\n{'='*60}")
+            print(f"[CRITICAL APPROVAL REQUIRED] Device offline")
+            print(f"  Tool: {tool}")
+            print(f"  Hint: {summary[:80]}")
+            print(f"{'='*60}")
+            try:
+                choice = input("Approve? (y=once / s=session / n=deny): ").strip().lower()
+                decision = {"y": "once", "s": "session", "n": "deny"}.get(choice, "deny")
+            except Exception:
+                decision = "deny"
+            if tool_use_id in sess.approval_queue:
+                sess.approval_queue.remove(tool_use_id)
+            sess.approval_in_progress = False
+            sess.last_activity_ts = time.time()
+            if decision == "once":
+                if tool_use_id in sess.tools:
+                    sess.tools[tool_use_id]["status"] = "running"
+            else:
+                if tool_use_id in sess.tools:
+                    del sess.tools[tool_use_id]
+                sess.completed_inferred_for_ts = sess.last_activity_ts
+            _mark_dirty()
+            wire = _to_device_wire()
+            await _send(wire)
+            _last_pushed_wire = wire
+            _clear_dirty()
+            return {"decision": decision}
+
+        # 设备在线 → 走原有审批流程
         await _send(_to_device_wire())
+        _update_pending_send_ts()  # 启动重发限速计时
 
         if _stub:
             print("[approval] stub mode → auto-once")
@@ -388,7 +536,10 @@ async def _handle_envelope(env: dict) -> dict:
             sess.completed_inferred_for_ts = sess.last_activity_ts
 
         _mark_dirty()
-        await _send(_to_device_wire())
+        wire = _to_device_wire()
+        await _send(wire)
+        _last_pushed_wire = wire
+        _clear_dirty()
         return {"decision": decision}
 
     if kind == "tool_done":
@@ -470,6 +621,9 @@ async def _handle_client(reader, writer):
 
 
 async def main():
+    global _lock, _send_lock
+    _lock = asyncio.Lock()
+    _send_lock = asyncio.Lock()
     server = await asyncio.start_server(_handle_client, HOST, PORT)
     print(f"[daemon] listening on {HOST}:{PORT}  stub={_stub}")
     async with server:
@@ -477,6 +631,7 @@ async def main():
             server.serve_forever(),
             _connect_loop(),
             _pusher_task(),
+            _heartbeat_task(),
         )
 
 
@@ -484,8 +639,37 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--stub", action="store_true",
                         help="跳过 BLE 连接, _send 改 stdout 打印用于 e2e 测试")
+    parser.add_argument("--offline", action="store_true",
+                        help="强制模拟设备离线（覆盖 stub 在线假设），用于离线审批测试")
+    parser.add_argument("--log", type=str, default=None,
+                        help="日志文件路径（默认：临时目录下的 ble_daemon.log）")
     args = parser.parse_args()
     _stub = args.stub
+    _force_offline = args.offline
+
+    # 设置日志：始终同时输出到终端和文件
+    import sys
+    import tempfile
+    log_path = args.log or __import__('os').path.join(tempfile.gettempdir(), "ble_daemon.log")
+
+    class TeeOutput:
+        def __init__(self, file_path, original_stream):
+            self.file = open(file_path, 'w', encoding='utf-8', buffering=1)
+            self.original = original_stream
+
+        def write(self, data):
+            self.original.write(data)
+            self.file.write(data)
+            self.file.flush()
+
+        def flush(self):
+            self.original.flush()
+            self.file.flush()
+
+    sys.stdout = TeeOutput(log_path, sys.stdout)
+    sys.stderr = TeeOutput(log_path.replace('.log', '_err.log'), sys.stderr)
+    print(f"[daemon] 日志文件: {log_path}")
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

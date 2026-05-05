@@ -16,14 +16,52 @@ import json
 import socket
 import sys
 
+# 导入风险分级配置
+try:
+    from risk_config import (
+        CRITICAL_PATHS, CRITICAL_BASH_PATTERNS,
+        SAFE_TOOLS, APPROVAL_TOOLS
+    )
+except ImportError:
+    # 回退默认值（如果 risk_config.py 不存在）
+    CRITICAL_PATHS = {".git/config", ".git/hooks", ".env", "credentials.json",
+                      "id_rsa", "id_ed25519", ".ssh/", "/etc/", "C:\\Windows\\"}
+    CRITICAL_BASH_PATTERNS = [
+        "git branch -D", "git push --force", "git push -f", "git reset --hard",
+        "rm -rf", "rm -fr", "dd if=", "> /dev/", "mkfs", "fdisk", "format ",
+        "del /s", "rmdir /s"
+    ]
+    SAFE_TOOLS = {"Read", "Glob", "Grep", "WebFetch", "WebSearch"}
+    APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
+
 HOST = "127.0.0.1"
 PORT = 57320
 CONNECT_TIMEOUT = 1.0     # localhost connect 应该 ms 级,1s 是 daemon 卡死的兜底
-RECV_TIMEOUT = 35         # 覆盖 daemon 端 30s approval 窗口 + 缓冲
+RECV_TIMEOUT = 70         # 覆盖 daemon 端 60s approval 窗口 + 10s 心跳检测缓冲
 MAX_STDIN_BYTES = 1 << 20  # 1MB hook payload 上限,防超大 tool_response 内存炸
-APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
 # NotebookEdit 归 edit 类但不需审批：notebook 编辑操作危险性低于直接文件写入，
 # 且 notebook cell 输出可在 Claude Code UI 中直接查看，无需额外硬件确认。
+
+def _classify_risk(tool: str, tool_input: dict) -> str:
+    """分类操作风险等级：safe（只读）/ normal（可逆写）/ critical（破坏性）。
+    设备离线时：safe/normal 自动批准，critical 回退 CLI 提示。
+    风险规则可在 risk_config.py 中自定义。"""
+    if tool in SAFE_TOOLS:
+        return "safe"
+
+    if tool == "Bash":
+        cmd = tool_input.get("command", "")
+        if any(p in cmd for p in CRITICAL_BASH_PATTERNS):
+            return "critical"
+        return "normal"
+
+    if tool in {"Write", "Edit"}:
+        path = tool_input.get("file_path", "")
+        if any(cp in path for cp in CRITICAL_PATHS):
+            return "critical"
+        return "normal"
+
+    return "normal"
 
 # ── 5 桶 tool_category (research/hook_to_device_mapping_v1.md) ───
 _TOOL_CATEGORY = {
@@ -77,6 +115,7 @@ def _hint_from_tool_input(tool_input) -> str:
 # ── 6 类 normalizer (返回 v2 envelope) ──────────────────
 def _normalize_pre_tool(event: dict) -> dict:
     tool = event.get("tool_name", "")
+    tool_input = event.get("tool_input") or {}
     return {
         "type": "event",
         "v": 2,
@@ -84,9 +123,10 @@ def _normalize_pre_tool(event: dict) -> dict:
             "kind":           "tool_start",
             "tool":           tool,
             "tool_category":  _tool_category(tool),
-            "summary":        _hint_from_tool_input(event.get("tool_input")),
+            "summary":        _hint_from_tool_input(tool_input),
             "needs_approval": tool in APPROVAL_TOOLS,
             "tool_use_id":    event.get("tool_use_id", ""),
+            "risk_level":     _classify_risk(tool, tool_input),
         },
         "generic": _generic(event),
     }

@@ -12,6 +12,12 @@
 #   sessions 数组只含活跃 session（有工具运行，或近 10s 内有活动）。
 #   prompt 字段非 null 时表示该 session 有工具等待审批。
 #
+# PC → 设备（心跳）：
+#   {"cmd": "ping", "ts": 1234567890.123}
+#
+# 设备 → PC（心跳响应）：
+#   {"ack": "pong", "ts": 1234567890.456}
+#
 # 设备 → PC（审批决策）：
 #   {"cmd": "permission", "id": "toolu_xxx", "decision": "once"}
 #   id 字段为真实 tool_use_id，由 PC 端 prompt.id 提供

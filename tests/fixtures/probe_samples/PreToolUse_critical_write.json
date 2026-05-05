@@ -1,0 +1,13 @@
+{
+  "session_id": "SESSION-FIXTURE-0001",
+  "transcript_path": "C:\\Users\\user\\.claude\\projects\\C--Users-user-Desktop-claudehardware\\SESSION-FIXTURE-0001.jsonl",
+  "cwd": "C:\\Users\\user\\Desktop\\claudehardware\\MicroPython_Claude_Assistant",
+  "permission_mode": "auto",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": ".env",
+    "content": "API_KEY=placeholder\n"
+  },
+  "tool_use_id": "toolu_FIXTURE_CRIT02"
+}

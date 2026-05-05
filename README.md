@@ -10,7 +10,8 @@
 MicroPython_Claude_Assistant/
 ├── daemon/          # PC 守护进程层
 │   ├── ble_daemon.py    # TCP↔BLE 桥接，状态机，推送到设备
-│   └── hook_bridge.py   # Claude Code Hook 接收，规范化为 v2 envelope
+│   ├── hook_bridge.py   # Claude Code Hook 接收，规范化为 v2 envelope
+│   └── risk_config.py   # 设备离线时的风险分级配置（可编辑）
 ├── device/          # ESP32 固件层
 │   ├── main.py          # 调试测试用（BLE 收发 + 串口 print，无 UI）
 │   ├── main_mvp.py      # 完整版（LVGL 渲染 + 触摸审批 + 状态机动画）
@@ -29,6 +30,7 @@ MicroPython_Claude_Assistant/
 ├── tests/           # 单元测试
 │   ├── test_protocol.py           # protocol 单元测试（21 用例）
 │   ├── test_daemon_state.py       # daemon 状态机时序测试（14 用例）
+│   ├── test_offline_approval.py   # 设备离线审批策略测试（7 用例）
 │   ├── test_daemon_concurrency.py # daemon 并发压测
 │   ├── test_hook_normalize.py     # hook_bridge 规范化测试
 │   ├── test_e2e_stub.py           # E2E 联动测试（无需设备，--stub 模式）
@@ -53,13 +55,41 @@ Claude Code
 
 反向（审批）：
   ESP32 触摸按钮 → BLE TX → ble_daemon → hook_bridge → Claude Code 执行/拒绝工具
+
+心跳（设备在线检测）：
+  ble_daemon 每 10s 发 ping → ESP32 立即回 pong → 30s 无响应判定离线
 ```
+
+---
+
+## 设备离线时的分层审批策略
+
+当设备离线（30s 无心跳响应）时，根据操作风险等级自动决策：
+
+| 风险等级 | 操作类型 | 离线行为 |
+|---------|---------|---------|
+| **safe** | Read / Glob / Grep / WebFetch / WebSearch | 自动批准 |
+| **normal** | 普通 Bash / Write / Edit | 自动批准 |
+| **critical** | Git 破坏性操作 / rm -rf / 关键路径修改 | CLI 提示用户（未实现） |
+
+### 风险分级规则（可自定义）
+
+编辑 `daemon/risk_config.py` 自定义风险规则：
+
+- **CRITICAL_PATHS**：写入这些路径视为 critical（如 `.git/config`, `.env`, `credentials.json`）
+- **CRITICAL_BASH_PATTERNS**：包含这些模式的 Bash 命令视为 critical（如 `git push --force`, `rm -rf`, `dd if=`）
+- **SAFE_TOOLS**：始终视为 safe 的只读工具
+- **APPROVAL_TOOLS**：需要审批的工具列表
+
+**设计理念**：设备离线不应阻塞工作流，但破坏性操作必须确认。fail-open 保证便利性，风险分级保证安全性。
 
 ---
 
 ## PC → ESP32 消息协议（wire 格式）
 
-### 当前版本（v3，sessions 数组）
+### 当前版本（v3，sessions 数组 + 心跳）
+
+#### 状态推送
 
 ```json
 {
@@ -78,6 +108,16 @@ Claude Code
     }
   ]
 }
+```
+
+#### 心跳
+
+```json
+// PC → 设备（每 10s）
+{"cmd": "ping", "ts": 1234567890.123}
+
+// 设备 → PC（立即响应）
+{"ack": "pong", "ts": 1234567890.456}
 ```
 
 `sessions` 数组只含活跃 session（有工具运行，或近 10s 内有活动）。多个 Claude Code 实例并发时每个 session 独立出现在数组中。
@@ -268,3 +308,4 @@ python daemon/ble_daemon.py --stub   # stub 模式（无设备测试）
 | v1.0 | 2026-04-27 | 初始版本：v1 wire（6字段），hook_bridge 接收层，daemon 状态机，基础测试 |
 | v2.0 | 2026-05-03 | wire 升级为 v2（9字段，+category/error/interrupted）；ble_daemon 状态机重构为 _tools 字典；修复 4 个 hook_bridge 已知问题；新增 test_protocol（17用例）、test_e2e_stub（E2E联动，无需设备）；daemon 状态机测试扩充至 13 用例 |
 | v3.0 | 2026-05-04 | wire 升级为 v3（sessions 数组）；ble_daemon 全局状态 → per-session _Session，修复多实例并发 approval 竞争；protocol 新增 SessionStatus / MultiSessionMsg；test_protocol 扩充至 21 用例，test_daemon_state 扩充至 14 用例；新增 sim_hooks.py 手动集成测试；Windows 进程清理修复 |
+| v4.0 | 2026-05-04 | 设备断联处理：心跳机制（ping/pong 每 10s，30s 无响应判定离线）+ 分层 fail-open（safe/normal 自动批准，critical 预留 CLI 提示）；新增 risk_config.py 可编辑风险规则；hook_bridge 添加 risk_level 字段；新增 test_offline_approval（7 用例）；全部测试通过（49 用例） |
