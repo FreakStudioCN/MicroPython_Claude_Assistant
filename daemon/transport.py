@@ -6,7 +6,10 @@
 
 import asyncio
 import json
+import os
+import sys
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 
@@ -27,9 +30,29 @@ class Transport:
 
 NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-DEVICE_NAME_PREFIX = "Claude"
 HEARTBEAT_INTERVAL_S = 10.0
 HEARTBEAT_TIMEOUT_S  = 30.0
+
+
+def _get_config_path() -> Path:
+    """获取配对配置文件路径（跨平台）。"""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", "~"))
+    else:
+        base = Path.home() / ".config"
+    return base / "claude-buddy" / "device.json"
+
+
+def _load_pairing_config() -> dict:
+    """加载配对配置，返回 {"device_name": str, "paired_mac": str, ...}。"""
+    path = _get_config_path()
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
 
 class BleTransport(Transport):
@@ -45,6 +68,15 @@ class BleTransport(Transport):
         self._on_recv       = None
         self._on_connect    = None
         self._on_disconnect = None
+
+        # 读取配对配置
+        config = _load_pairing_config()
+        if config.get("device_name"):
+            self._target_device_name = config["device_name"]
+            print(f"[daemon] 已加载配对设备: {self._target_device_name}")
+        else:
+            self._target_device_name = None
+            print("[daemon] 未配对设备，将连接任意 Claude-Buddy-* 设备")
 
     # ── 公开接口 ────────────────────────────────────────────
 
@@ -108,14 +140,30 @@ class BleTransport(Transport):
                 continue
             try:
                 devices = await BleakScanner.discover(timeout=5.0)
-                addr = next(
-                    (d.address for d in devices if d.name and d.name.startswith(DEVICE_NAME_PREFIX)),
-                    None,
-                )
+
+                # 根据配对状态选择设备
+                addr = None
+                if self._target_device_name:
+                    # 精确匹配配对的设备名称
+                    addr = next(
+                        (d.address for d in devices if d.name == self._target_device_name),
+                        None,
+                    )
+                    if not addr:
+                        print(f"[daemon] 配对设备 {self._target_device_name} 未找到，重试中...")
+                else:
+                    # 前缀匹配任意 Claude-Buddy-* 设备
+                    addr = next(
+                        (d.address for d in devices if d.name and d.name.startswith("Claude-Buddy-")),
+                        None,
+                    )
+                    if not addr:
+                        print("[daemon] 未找到任何 Claude-Buddy 设备，重试中...")
+
                 if not addr:
-                    print("[daemon] device not found, retrying...")
                     await asyncio.sleep(3)
                     continue
+
                 self._client = BleakClient(addr, disconnected_callback=self._on_ble_disconnect)
                 await self._client.connect()
                 await self._client.start_notify(NUS_TX, self._on_ble_notify)
