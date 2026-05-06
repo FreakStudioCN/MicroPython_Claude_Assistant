@@ -226,6 +226,87 @@ PostToolUseFailure / TaskCreated / TaskCompleted / WorktreeCreate / WorktreeRemo
 
 ---
 
+---
+
+## v4 精简 wire 协议（当前实现，2026-05-06）
+
+### 设计动机
+
+v3 sessions 数组每个 session 有 9 个字段（running/waiting/completed/msg/tokens/prompt/category/error/interrupted），单条 wire 约 120-200B，BLE 需要 6-10 个 20B chunk。v4 改为单字母状态枚举，把 payload 压到 20-60B，1-4 个 chunk。
+
+### PC → 设备（状态推送）
+
+```json
+{"ss": [{"s": "W", "m": "Read: /etc/hosts"}]}
+```
+
+`ss` 数组每个元素代表一个活跃 session：
+
+| 字段 | 类型 | 含义 | 何时出现 |
+|------|------|------|---------|
+| `s`  | str  | 状态枚举（见下表） | 必填 |
+| `m`  | str  | 工具简短描述（≤16字） | 仅 `s="W"` |
+| `t`  | str  | 工具名（Bash/Write/…） | 仅 `s="P"` |
+| `h`  | str  | 审批提示文本（≤80字） | 仅 `s="P"` |
+
+状态枚举：
+
+| 值 | 含义 | 设备动画 |
+|----|------|---------|
+| `I` | Idle — 空闲 | 呼吸/待机 |
+| `W` | Working — 工具执行中 | 忙碌动画 |
+| `P` | Pending — 等待审批 | 闪烁提示 |
+| `C` | Completed — 任务完成 | 庆祝动画 |
+| `E` | Error — 出错 | 错误动画 |
+
+典型 wire 大小对比：
+
+| 状态 | 示例 payload | 大小 | BLE chunks |
+|------|-------------|------|-----------|
+| Idle | `{"ss":[{"s":"I"}]}` | 21B | 2 |
+| Working | `{"ss":[{"s":"W","m":"Read: /etc/hosts"}]}` | 45B | 3 |
+| Pending | `{"ss":[{"s":"P","t":"Bash","h":"rm -rf /tmp"}]}` | 62B | 4 |
+
+### 设备 → PC（审批决策）
+
+```json
+{"d": "once", "n": 0}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `d`  | 决策：`once`（批准一次）/ `session`（本 session 全批）/ `deny`（拒绝） |
+| `n`  | ss 数组下标，标识哪个 session（当前 daemon 端未使用，预留多 session 路由） |
+
+hook_bridge 将 daemon 返回的 `"deny"` 转换为 Claude Code 协议的 `"block"`：
+
+```python
+# hook_bridge.py
+if hook == "PreToolUse" and resp.get("decision") == "deny":
+    print(json.dumps({"decision": "block", "reason": "Denied by hardware buddy"}))
+```
+
+### 设备端解析（protocol.py）
+
+```python
+class SessionStatus:
+    def __init__(self, d: dict):
+        s = d.get("s", "I")
+        self.running   = 1 if s == "W" else 0
+        self.waiting   = 1 if s == "P" else 0
+        self.completed = s == "C"
+        self.error     = "!" if s == "E" else ""
+        self.msg       = d.get("m", "")
+        self.prompt    = {"tool": d.get("t",""), "hint": d.get("h",""), "id": ""} if s == "P" else None
+```
+
+### 已知限制
+
+1. **多 session 审批路由未实现**：daemon `_on_transport_recv` 忽略 `n` 字段，决策广播给所有等待 session；设备端 `render_task` 只处理 ss[0] 的审批（`break` 后跳过其余）。单 session 场景无影响。
+2. **错误文本不传输**：`s="E"` 时不携带具体错误信息，设备只知道"有错误"，不知道错误内容。设计取舍：节省 BLE 带宽。
+
+---
+
 ## 变更记录
 
 | 版本 | 日期 | 内容 |

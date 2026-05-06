@@ -5,31 +5,11 @@ except ImportError:
 
 import sys
 from transport import BleTransport
+from queue import Queue
 import protocol as p
 import state as st
 
 _transport = BleTransport()
-
-STATE_NAME = {
-    st.SLEEP: "SLEEP", st.IDLE: "IDLE", st.WORKING: "WORKING",
-    st.PENDING: "PENDING", st.CELEBRATE: "CELEBRATE",
-    st.ERROR: "ERROR", st.APPROVED: "APPROVED",
-}
-
-class _Queue:
-    def __init__(self):
-        self._items = []
-        self._event = asyncio.Event()
-
-    def put_nowait(self, item):
-        self._items.append(item)
-        self._event.set()
-
-    async def get(self):
-        while not self._items:
-            self._event.clear()
-            await self._event.wait()
-        return self._items.pop(0)
 
 
 _msg_queue = None
@@ -37,13 +17,13 @@ _approval_pending = False
 
 
 def _print_status(s):
-    sid = getattr(s, "id", "—")
     state = st.StateEvent.get_base_state(s)
-    print(f"  id={sid} running={s.running} waiting={s.waiting} completed={s.completed}")
-    print(f"  msg={s.msg!r} category={s.category!r} error={s.error!r}")
-    print(f"  state={STATE_NAME.get(state, state)} needs_approval={st.StateEvent.needs_approval(s)}")
+    print(f"  running={s.running} waiting={s.waiting} completed={s.completed}")
+    print(f"  msg={s.msg!r} state={st.STATE_NAMES[state]} needs_approval={st.StateEvent.needs_approval(s)}")
+    if s.error:
+        print(f"  error={s.error!r}")
     if st.StateEvent.needs_approval(s):
-        print(f"  !! tool={s.prompt.get('tool','?')} id={s.prompt.get('id','?')}")
+        print(f"  !! tool={s.prompt.get('tool','?')}")
         print(f"     hint={s.prompt.get('hint','')[:60]}")
 
 
@@ -55,14 +35,10 @@ def _print_msg(msg):
         print(f"[ack/cmd] {msg}")
         return
     if _approval_pending:
-        return  # 审批等待中，静默丢弃打印，避免刷走输入提示
-    if isinstance(msg, p.MultiSessionMsg):
-        print(f"[MultiSessionMsg] {len(msg.sessions)} session(s):")
-        for s in msg.sessions:
-            _print_status(s)
         return
-    print("[StatusMsg]:")
-    _print_status(msg)
+    print(f"[MultiSessionMsg] {len(msg.sessions)} session(s):")
+    for s in msg.sessions:
+        _print_status(s)
 
 
 async def _async_input(prompt: str) -> str:
@@ -124,11 +100,10 @@ async def render_task():
             has_pending = False
             if isinstance(msg, p.MultiSessionMsg):
                 has_pending = any(st.StateEvent.needs_approval(s) for s in msg.sessions)
-            elif isinstance(msg, p.StatusMsg):
-                has_pending = st.StateEvent.needs_approval(msg)
             if has_pending:
-                continue  # 仍在等待 daemon 处理决策，丢弃重发消息
-            _approval_pending = False  # 解锁，继续处理这条消息
+                continue
+            _approval_pending = False
+            _print_msg(msg)  # 补打印被静默的消息
 
         if isinstance(msg, p.MultiSessionMsg):
             for i, s in enumerate(msg.sessions):
@@ -143,7 +118,7 @@ async def render_task():
 
 async def _main():
     global _msg_queue
-    _msg_queue = _Queue()
+    _msg_queue = Queue()
     await asyncio.gather(ble_recv_task(), render_task())
 
 asyncio.run(_main())
