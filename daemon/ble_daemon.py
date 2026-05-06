@@ -36,13 +36,10 @@ import sys
 import time
 from typing import Optional
 
+from transport import BleTransport
+
 HOST = "127.0.0.1"
 PORT = 57320
-
-# BLE 常量
-NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-DEVICE_NAME_PREFIX = "Claude"
 
 # 业务常量
 APPROVAL_TIMEOUT_S = int(__import__('os').environ.get("APPROVAL_TIMEOUT_S", 60))
@@ -90,110 +87,39 @@ _dirty = False         # 全局 dirty 标志（pusher 用）
 _stub = False
 _force_offline = False  # --offline 标志：强制 device_online=False，覆盖 stub 的在线假设
 
-# ── BLE 连接 ──────────────────────────────────────────────
-_client = None
-_connected = False
-_rx_buf = ""
+# ── Transport ─────────────────────────────────────────────
+_transport: Optional[BleTransport] = None
+
+# ── 业务层全局 ────────────────────────────────────────────
 _lock = None
-_send_lock = None        # 串行化所有 BLE 物理写入，防止分包交叉
-_device_online = False         # 心跳判定：设备是否在线
-_last_pong_ts = 0.0            # 最后一次收到 pong 的时间戳
-_last_ping_ts = 0.0            # 最后一次发出 ping 的时间戳（用于 POST_PING_COOLDOWN）
 _last_pending_send_ts = 0.0    # 最后一次推送 PENDING 状态的时间戳（用于 MIN_PENDING_RESEND）
 _last_pushed_wire = None       # 最后推送的 wire（pusher 和 approval 共享，防止重复推送）
 
 
-# ── BLE 层 ─────────────────────────────────────────────────
-def _on_disconnect(client):
-    global _connected
-    _connected = False
+# ── BLE 回调（业务层处理） ────────────────────────────────────
+def _on_transport_recv(msg: dict):
+    """处理设备发来的消息（审批决策）。pong 已在 BleTransport 内处理。"""
+    if "d" in msg:
+        decision = msg["d"]
+        for sess in _sessions.values():
+            if sess.approval_in_progress and sess.decision_event:
+                sess.decision_value = decision
+                sess.decision_event.set()
+    elif msg.get("_event") == "offline":
+        _resolve_pending_approvals_on_offline()
+
+
+def _on_transport_connect():
+    """BLE 重连成功：有活跃 session 时触发状态推送。"""
+    print("[daemon] disconnected, will reconnect..." if not _transport.connected() else "")
+    if _sessions:
+        _mark_dirty()
+
+
+def _on_transport_disconnect():
     print("[daemon] disconnected, will reconnect...")
 
 
-def _on_notify(sender, data: bytearray):
-    """设备 → PC: 接 {cmd:"permission", id, decision:"once|deny"} 解 approval。
-    广播给所有正在等待的 session 的 decision_event。
-    同时处理 pong 心跳响应。"""
-    global _rx_buf, _last_pong_ts, _device_online
-    _rx_buf += data.decode(errors="ignore")
-    while "\n" in _rx_buf:
-        line, _rx_buf = _rx_buf.split("\n", 1)
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-
-            # 处理 pong 心跳
-            if msg.get("ack") == "pong":
-                _last_pong_ts = time.time()
-                if not _device_online:
-                    print("[heartbeat] device back online")
-                    _device_online = True
-                continue
-
-            # 处理审批决策（新格式 {"d":"once","n":0}，无需 prompt_id）
-            if "d" in msg:
-                decision = msg["d"]
-                for sess in _sessions.values():
-                    if sess.approval_in_progress and sess.decision_event:
-                        sess.decision_value = decision
-                        sess.decision_event.set()
-        except Exception:
-            pass
-
-
-async def _connect_loop():
-    global _client, _connected, _device_online, _last_pong_ts
-    if _stub:
-        return
-    from bleak import BleakClient, BleakScanner
-    while True:
-        if _connected:
-            await asyncio.sleep(1)
-            continue
-        try:
-            devices = await BleakScanner.discover(timeout=5.0)
-            addr = next(
-                (d.address for d in devices if d.name and d.name.startswith(DEVICE_NAME_PREFIX)),
-                None,
-            )
-            if not addr:
-                print("[daemon] device not found, retrying...")
-                await asyncio.sleep(3)
-                continue
-            _client = BleakClient(addr, disconnected_callback=_on_disconnect)
-            await _client.connect()
-            await _client.start_notify(NUS_TX, _on_notify)
-            _connected = True
-            _device_online = True  # 连接成功时标记在线
-            _last_pong_ts = time.time()
-            print(f"[daemon] connected to {addr}")
-            await asyncio.sleep(1.0)
-        except Exception as e:
-            print(f"[daemon] connect failed: {e}")
-            _client = None
-            _connected = False
-            _device_online = False
-            await asyncio.sleep(3)
-
-
-async def _send(payload: dict):
-    """推送 wire JSON 到 BLE（或 stub 打印）。"""
-    if _stub:
-        print(f"[stub-send] t={time.time():.3f} {json.dumps(payload, ensure_ascii=False)}")
-        return
-    if not _connected or _client is None:
-        print(f"[send] skipped (not connected): {payload}")
-        return
-    data = (json.dumps(payload) + "\n").encode()
-    print(f"[send] t={time.time():.3f} {payload} ({len(data)}B)")
-    async with _send_lock:
-        for i in range(0, len(data), 20):
-            await _client.write_gatt_char(NUS_RX, data[i:i+20], response=False)
-
-
-# ── 心跳任务 ───────────────────────────────────────────────
 def _resolve_pending_approvals_on_offline():
     """设备掉线时，立刻按 risk_level 解决所有进行中的审批，避免卡到超时。"""
     for sid, sess in _sessions.items():
@@ -208,22 +134,15 @@ def _resolve_pending_approvals_on_offline():
             sess.decision_event.set()
 
 
-async def _heartbeat_task():
-    """后台心跳任务：每 10s 发 ping，30s 无 pong 判定离线。"""
-    global _device_online, _last_pong_ts, _last_ping_ts
-    while True:
-        if _connected and not _stub:
-            _last_ping_ts = time.time()
-            await _send({"cmd": "ping", "ts": _last_ping_ts})
-            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
-            now = time.time()
-            if now - _last_pong_ts > HEARTBEAT_TIMEOUT_S:
-                if _device_online:
-                    print("[heartbeat] device offline (no pong for 30s)")
-                    _device_online = False
-                    _resolve_pending_approvals_on_offline()
-        else:
-            await asyncio.sleep(1.0)
+async def _send(payload: dict):
+    """推送 wire JSON（stub 打印 / 走 transport）。"""
+    if _stub:
+        print(f"[stub-send] t={time.time():.3f} {json.dumps(payload, ensure_ascii=False)}")
+        return
+    if not _transport.connected():
+        print(f"[send] skipped (not connected): {payload}")
+        return
+    await _transport.send(payload)
 
 
 # ── per-session 状态翻译 ───────────────────────────────────
@@ -371,7 +290,8 @@ async def _pusher_tick(last_pushed_wire):
                         break
 
     # ping 刚发出时屏蔽推送，避免 ESP32 写 pong 期间丢包
-    in_cooldown = (now - _last_ping_ts) < POST_PING_COOLDOWN_S
+    last_ping = _transport._last_ping_ts if _transport else 0.0
+    in_cooldown = (now - last_ping) < POST_PING_COOLDOWN_S
     if in_cooldown:
         return last_pushed_wire
 
@@ -453,8 +373,8 @@ async def _handle_envelope(env: dict) -> dict:
         sess.pending_resend_count = 0  # 新审批入队，重置重发计数
 
         # stub 模式视为设备在线（用于测试），--offline 强制覆盖
-        # 用 _connected 而非 _device_online：BLE 已连接即可走设备审批，不依赖心跳时序
-        device_online = (_connected or _stub) and not _force_offline
+        # 用 connected() 而非 device_online()：BLE 已连接即可走设备审批，不依赖心跳时序
+        device_online = (_transport.connected() or _stub) and not _force_offline
 
         # 设备离线 + 低/中风险 → 自动批准
         if not device_online and risk_level in {"safe", "normal"}:
@@ -619,18 +539,24 @@ async def _handle_client(reader, writer):
 
 
 async def main():
-    global _lock, _send_lock
+    global _lock, _transport
     _lock = asyncio.Lock()
-    _send_lock = asyncio.Lock()
+    _transport = BleTransport()
     server = await asyncio.start_server(_handle_client, HOST, PORT)
     print(f"[daemon] listening on {HOST}:{PORT}  stub={_stub}")
     async with server:
-        await asyncio.gather(
-            server.serve_forever(),
-            _connect_loop(),
-            _pusher_task(),
-            _heartbeat_task(),
-        )
+        if _stub:
+            await asyncio.gather(server.serve_forever(), _pusher_task())
+        else:
+            await asyncio.gather(
+                server.serve_forever(),
+                _transport.start(
+                    on_recv=_on_transport_recv,
+                    on_connect=_on_transport_connect,
+                    on_disconnect=_on_transport_disconnect,
+                ),
+                _pusher_task(),
+            )
 
 
 if __name__ == "__main__":

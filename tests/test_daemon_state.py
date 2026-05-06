@@ -73,12 +73,23 @@ def _any_completed(wires=None):
                if any(s.get("s") == "C" for s in w.get("ss", [])))
 
 
+# ── mock transport ─────────────────────────────────────
+class _MockTransport:
+    def __init__(self, online=True):
+        self._connected_val = online
+        self._device_online_val = online
+        self._last_ping_ts = 0.0
+
+    def connected(self): return self._connected_val
+    def device_online(self): return self._device_online_val
+
+
 # ── reset all daemon state ─────────────────────────────
 def _reset():
     d._sessions.clear()
     d._dirty = False
     d._stub = True
-    d._device_online = True  # 测试默认设备在线
+    d._transport = _MockTransport(online=True)
     _sent_wires.clear()
     _set(100.0)
 
@@ -218,7 +229,7 @@ async def test_approval_deny_no_celebrate():
     """⚡ codex P2 bug 2 regression. 用真 wait_for + 极短 timeout 模拟 deny。"""
     _reset()
     d._stub = False
-    d._connected = True  # 模拟设备在线，否则会触发离线自动批准
+    d._transport = _MockTransport(online=True)  # 模拟设备在线，否则会触发离线自动批准
     orig_to = d.APPROVAL_TIMEOUT_S
     d.APPROVAL_TIMEOUT_S = 0.05  # 50ms 真实 wall wait_for
     try:

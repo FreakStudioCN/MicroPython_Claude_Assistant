@@ -4,9 +4,11 @@ except ImportError:
     import asyncio
 
 import sys
-import ble_uart
+from transport import BleTransport
 import protocol as p
 import state as st
+
+_transport = BleTransport()
 
 STATE_NAME = {
     st.SLEEP: "SLEEP", st.IDLE: "IDLE", st.WORKING: "WORKING",
@@ -90,7 +92,7 @@ async def _handle_approval(session_idx: int):
         choice = "n"
     decision = "once" if choice == "y" else ("session" if choice == "s" else "deny")
     reply = p.build_decision(session_idx, decision)
-    await ble_uart.send(reply)
+    await _transport.send(reply)
     print(f"  → sent decision='{decision}'")
 
 
@@ -98,11 +100,11 @@ async def ble_recv_task():
     global _approval_pending
     while True:
         print("[ble] waiting for PC connection...")
-        await ble_uart.advertise()
+        await _transport.connect()
         print("[ble] connected")
         _approval_pending = False
-        while ble_uart.connected():
-            line = await ble_uart.recv_line()
+        while _transport.connected():
+            line = await _transport.recv_line()
             _msg_queue.put_nowait(p.parse(line))
         print("[ble] disconnected")
 
@@ -113,7 +115,7 @@ async def render_task():
         msg = await _msg_queue.get()
 
         if isinstance(msg, dict) and msg.get("cmd") == "ping":
-            await ble_uart.send(p.build_ack("pong", ok=True))
+            await _transport.send(p.build_ack("pong", ok=True))
             continue
 
         _print_msg(msg)

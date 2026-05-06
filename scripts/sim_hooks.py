@@ -77,6 +77,35 @@ OFFLINE_RISK_SEQUENCE = [
 ]
 
 
+# 重连测试序列：触发 PENDING → 掉电 → 重连 → 验证 PENDING 重推
+RECONNECT_SEQUENCE = [
+    ("UserPromptSubmit",          "UserPromptSubmit.json",        None),
+    ("PreToolUse(normal/Bash-ls)", "PreToolUse_normal_bash.json",  None),  # 触发 PENDING
+    # [此处 sim 暂停，等用户断开/重连设备]
+    ("PostToolUse(normal/Bash-ls)", "PostToolUse_normal_bash.json", None),
+]
+
+
+def _wait_ble_disconnected(log_path: str, after_ts: float, timeout=30.0) -> bool:
+    """等待 daemon 日志出现 disconnected，且时间戳晚于 after_ts。"""
+    deadline = time.time() + timeout
+    dots = 0
+    while time.time() < deadline:
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            idx = content.rfind("[daemon] disconnected")
+            if idx >= 0:
+                return True
+        except OSError:
+            pass
+        time.sleep(1.0)
+        dots += 1
+        print(f"\r[sim] 等待设备断开... {dots}s", end="", flush=True)
+    print()
+    return False
+
+
 def _wait_listen(timeout=8.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -163,6 +192,8 @@ def main():
     parser.add_argument("--skip-ble-check", action="store_true", help="跳过 BLE 连接检测（daemon 已手动连接设备）")
     parser.add_argument("--offline-risk", action="store_true",
                         help="离线风险分级测试：以 --stub --offline 启动 daemon，跑 OFFLINE_RISK_SEQUENCE")
+    parser.add_argument("--reconnect-test", action="store_true",
+                        help="掉电重连测试：触发 PENDING 后暂停，等用户断开/重连设备，验证 PENDING 重推")
     args = parser.parse_args()
 
     # --offline-risk 隐含 --stub（无设备），并强制 daemon 以 --offline 启动
@@ -212,6 +243,10 @@ def main():
         print(f"\n[sim] 离线风险分级测试模式（设备强制离线）")
         print(f"  safe/normal → 期望 auto-approve")
         print(f"  critical    → 期望 CLI 提示（需人工输入 y/n）")
+    elif args.reconnect_test:
+        sequence = RECONNECT_SEQUENCE
+        print(f"\n[sim] 掉电重连测试模式")
+        print(f"  步骤: PreToolUse(normal) → 暂停 → 断开设备 → 重连 → 验证 PENDING 重推")
     else:
         sequence = SEND_SEQUENCE
 
@@ -250,6 +285,30 @@ def main():
                     print(f"  expected : {expected}  {'✓ PASS' if ok else '✗ FAIL'}")
                 elif "(critical" in label:
                     print(f"  expected : ONCE or DENY（取决于人工输入）")
+
+            # 重连测试：PreToolUse 发出后暂停，等用户断开/重连设备
+            if args.reconnect_test and label.startswith("PreToolUse"):
+                reconnect_ts = time.time()
+                print(f"\n  [reconnect] 请现在断开 ESP32 电源（30s 内）...")
+                if _wait_ble_disconnected(LOG_PATH, after_ts=reconnect_ts, timeout=30.0):
+                    print(f"\n  [reconnect] 检测到断开，请重新连接 ESP32（60s 内）...")
+                    if _wait_ble_connected(LOG_PATH, timeout=60.0):
+                        # 等 pusher 推送一次（最多 1s）
+                        time.sleep(1.2)
+                        try:
+                            with open(LOG_PATH, encoding="utf-8", errors="replace") as f:
+                                log = f.read()
+                            # 验证重连后有 PENDING 推送
+                            reconnect_idx = log.rfind("[daemon] connected")
+                            pending_after = log.find("'s': 'P'", reconnect_idx)
+                            ok = pending_after >= 0
+                            print(f"  [reconnect] 重连后 PENDING 重推: {'✓ PASS' if ok else '✗ FAIL (未检测到 PENDING)'}")
+                        except OSError:
+                            print(f"  [reconnect] 无法读取日志，跳过验证")
+                    else:
+                        print(f"\n  [reconnect] FAIL: 60s 内未重连")
+                else:
+                    print(f"\n  [reconnect] SKIP: 30s 内未检测到断开")
 
             # 模拟 Claude Code 真实节奏：工具间至少 1s（避免 BLE 推送过快导致设备丢包）
             time.sleep(1.0)

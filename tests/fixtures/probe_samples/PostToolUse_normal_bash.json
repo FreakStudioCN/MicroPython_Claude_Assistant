@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "ls -la device/", "description": "List device directory" },
+  "tool_response": { "stdout": "total 8\ndrwxr-xr-x 2 user user 4096 May  6 10:00 .\n", "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false },
+  "tool_use_id": "toolu_FIXTURE_NORM01",
+  "duration_ms": 120
+}

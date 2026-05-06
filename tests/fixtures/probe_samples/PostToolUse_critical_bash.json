@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "rm -rf /tmp/old_build", "description": "Clean up old build artifacts" },
+  "tool_response": { "stdout": "", "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false },
+  "tool_use_id": "toolu_FIXTURE_CRIT01",
+  "duration_ms": 200
+}
