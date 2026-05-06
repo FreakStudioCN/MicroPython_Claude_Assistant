@@ -233,3 +233,4 @@ PostToolUseFailure / TaskCreated / TaskCompleted / WorktreeCreate / WorktreeRemo
 | v1.0 | 2026-04-27 | 初始设计文档，v2 协议草案，落地优先序 |
 | v1.1 | 2026-05-03 | 追加实施状态说明：v2 协议已落地，三步优先序已全部完成 |
 | v1.2 | 2026-05-04 | 追加实施状态说明：v3 sessions 数组格式已落地，per-session 状态机已实现 |
+| v1.3 | 2026-05-06 | 追加实施状态说明：v4 精简 wire 已落地，BLE chunks 从 9-16 降至 1-4 |

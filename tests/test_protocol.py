@@ -143,22 +143,20 @@ def test_parse_empty_string():
 
 # ── build_decision() 测试 ──────────────────────────────────
 def test_build_decision_once():
-    result = p.build_decision("toolu_abc123", "once")
+    result = p.build_decision(0, "once")
     _assert(result.endswith("\n"), "should end with newline")
     data = json.loads(result.strip())
-    _assert(data["cmd"] == "permission", "cmd should be permission")
-    _assert(data["id"] == "toolu_abc123", "id should match")
-    _assert(data["decision"] == "once", "decision should be once")
+    _assert(data["d"] == "once", "d should be once")
+    _assert(data["n"] == 0, "n should be 0")
     print("  ok  build_decision() once")
 
 
 def test_build_decision_deny():
-    result = p.build_decision("toolu_xyz789", "deny")
+    result = p.build_decision(1, "deny")
     _assert(result.endswith("\n"), "should end with newline")
     data = json.loads(result.strip())
-    _assert(data["cmd"] == "permission", "cmd should be permission")
-    _assert(data["id"] == "toolu_xyz789", "id should match")
-    _assert(data["decision"] == "deny", "decision should be deny")
+    _assert(data["d"] == "deny", "d should be deny")
+    _assert(data["n"] == 1, "n should be 1")
     print("  ok  build_decision() deny")
 
 
@@ -223,31 +221,24 @@ def test_status_msg_empty_dict():
 
 # ── MultiSessionMsg / SessionStatus 测试 ──────────────────
 def test_parse_multi_session_msg():
-    """parse() 识别 sessions 字段，返回 MultiSessionMsg。"""
+    """parse() 识别 ss 字段，返回 MultiSessionMsg（v4 格式）。"""
     line = json.dumps({
-        "v": 2,
-        "sessions": [
-            {"id": "sess-aaa", "running": 1, "waiting": 0, "completed": False,
-             "msg": "Bash: ls", "category": "exec", "error": "", "interrupted": False,
-             "prompt": None},
-            {"id": "sess-bbb", "running": 0, "waiting": 1, "completed": False,
-             "msg": "approve: Write", "category": "edit", "error": "", "interrupted": False,
-             "prompt": {"id": "t2", "tool": "Write", "hint": "main.py"}},
+        "ss": [
+            {"s": "W", "m": "Bash"},
+            {"s": "P", "t": "Write", "h": "main.py"},
         ]
     })
     result = p.parse(line)
     _assert(isinstance(result, p.MultiSessionMsg), f"should return MultiSessionMsg, got {type(result)}")
     _assert(len(result.sessions) == 2, f"should have 2 sessions, got {len(result.sessions)}")
     s0 = result.sessions[0]
-    _assert(s0.id == "sess-aaa", f"s0.id should be 'sess-aaa', got {s0.id!r}")
     _assert(s0.running == 1, "s0.running should be 1")
     _assert(s0.waiting == 0, "s0.waiting should be 0")
-    _assert(s0.category == "exec", "s0.category should be exec")
+    _assert(s0.msg == "Bash", "s0.msg should be Bash")
     s1 = result.sessions[1]
-    _assert(s1.id == "sess-bbb", f"s1.id should be 'sess-bbb', got {s1.id!r}")
     _assert(s1.waiting == 1, "s1.waiting should be 1")
     _assert(st.StateEvent.needs_approval(s1) is True, "s1 should need approval")
-    print("  ok  parse() MultiSessionMsg (2 sessions)")
+    print("  ok  parse() MultiSessionMsg v4 (ss key)")
 
 
 def test_parse_multi_session_empty():
@@ -260,49 +251,46 @@ def test_parse_multi_session_empty():
 
 
 def test_session_status_fields():
-    """SessionStatus 字段提取和默认值。"""
-    d = {
-        "id": "abc12345",
-        "running": 2, "waiting": 1, "completed": True,
-        "msg": "Bash: ls", "category": "exec",
-        "error": "timeout", "interrupted": True,
-        "prompt": {"id": "t1", "tool": "Bash", "hint": "ls"},
-    }
-    s = p.SessionStatus(d)
-    _assert(s.id == "abc12345", "id should match")
-    _assert(s.running == 2, "running should be 2")
-    _assert(s.waiting == 1, "waiting should be 1")
-    _assert(s.completed is True, "completed should be True")
-    _assert(s.msg == "Bash: ls", "msg should match")
-    _assert(s.category == "exec", "category should be exec")
-    _assert(s.error == "timeout", "error should match")
-    _assert(s.interrupted is True, "interrupted should be True")
-    _assert(s.prompt["tool"] == "Bash", "prompt.tool should be Bash")
+    """SessionStatus v4 字段提取。"""
+    s_w = p.SessionStatus({"s": "W", "m": "Bash: ls"})
+    _assert(s_w.running == 1, "W: running should be 1")
+    _assert(s_w.waiting == 0, "W: waiting should be 0")
+    _assert(s_w.msg == "Bash: ls", "W: msg should match")
+    _assert(s_w.prompt is None, "W: prompt should be None")
 
-    # 默认值
-    s_empty = p.SessionStatus({})
-    _assert(s_empty.id == "", "id default should be empty")
-    _assert(s_empty.running == 0, "running default should be 0")
-    _assert(s_empty.prompt is None, "prompt default should be None")
-    print("  ok  SessionStatus fields + defaults")
+    s_p = p.SessionStatus({"s": "P", "t": "Bash", "h": "rm -rf /"})
+    _assert(s_p.waiting == 1, "P: waiting should be 1")
+    _assert(s_p.prompt is not None, "P: prompt should not be None")
+    _assert(s_p.prompt["tool"] == "Bash", "P: prompt.tool should be Bash")
+    _assert(s_p.prompt["hint"] == "rm -rf /", "P: prompt.hint should match")
+
+    s_e = p.SessionStatus({"s": "E"})
+    _assert(s_e.error == "error", "E: error should be 'error'")
+
+    s_c = p.SessionStatus({"s": "C"})
+    _assert(s_c.completed is True, "C: completed should be True")
+
+    s_i = p.SessionStatus({})
+    _assert(s_i.running == 0, "I: running should be 0")
+    _assert(s_i.prompt is None, "I: prompt should be None")
+    print("  ok  SessionStatus v4 fields")
 
 
 def test_state_event_with_session_status():
-    """StateEvent 方法对 SessionStatus 同样适用（接口相同）。"""
-    s_pending = p.SessionStatus({"waiting": 1, "running": 0})
-    s_working = p.SessionStatus({"waiting": 0, "running": 2})
-    s_idle    = p.SessionStatus({"waiting": 0, "running": 0})
-    s_approve = p.SessionStatus({"prompt": {"id": "t1", "tool": "Bash", "hint": ""}})
-    s_done    = p.SessionStatus({"completed": True})
-    s_err     = p.SessionStatus({"error": "boom", "interrupted": False})
+    """StateEvent 方法对 v4 SessionStatus 同样适用。"""
+    s_pending = p.SessionStatus({"s": "P", "t": "Bash", "h": "hint"})
+    s_working = p.SessionStatus({"s": "W", "m": "Read"})
+    s_idle    = p.SessionStatus({"s": "I"})
+    s_done    = p.SessionStatus({"s": "C"})
+    s_err     = p.SessionStatus({"s": "E"})
 
-    _assert(st.StateEvent.get_base_state(s_pending) == st.PENDING, "pending session should be PENDING")
-    _assert(st.StateEvent.get_base_state(s_working) == st.WORKING, "working session should be WORKING")
-    _assert(st.StateEvent.get_base_state(s_idle) == st.IDLE, "idle session should be IDLE")
-    _assert(st.StateEvent.needs_approval(s_approve) is True, "should need approval")
-    _assert(st.StateEvent.should_celebrate(s_done) is True, "should celebrate")
-    _assert(st.StateEvent.should_show_error(s_err) is True, "should show error")
-    print("  ok  StateEvent methods work with SessionStatus")
+    _assert(st.StateEvent.get_base_state(s_pending) == st.PENDING, "P should be PENDING")
+    _assert(st.StateEvent.get_base_state(s_working) == st.WORKING, "W should be WORKING")
+    _assert(st.StateEvent.get_base_state(s_idle) == st.IDLE, "I should be IDLE")
+    _assert(st.StateEvent.needs_approval(s_pending) is True, "P should need approval")
+    _assert(st.StateEvent.should_celebrate(s_done) is True, "C should celebrate")
+    _assert(st.StateEvent.should_show_error(s_err) is True, "E should show error")
+    print("  ok  StateEvent methods work with v4 SessionStatus")
 
 
 # ── 主函数 ─────────────────────────────────────────────────

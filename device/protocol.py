@@ -64,17 +64,17 @@ class StatusMsg:
 
 
 class SessionStatus:
-    """v3 wire 中单个 session 的状态字段（与 StatusMsg 字段名相同，多了 id）。"""
+    """v4 wire 中单个 session 的状态（从 s 字段推导所有属性）。"""
     def __init__(self, d: dict):
-        self.id          = d.get("id", "")
-        self.running     = d.get("running", 0)
-        self.waiting     = d.get("waiting", 0)
-        self.completed   = d.get("completed", False)
-        self.msg         = d.get("msg", "")
-        self.prompt      = d.get("prompt")
-        self.category    = d.get("category", "")
-        self.error       = d.get("error", "")
-        self.interrupted = d.get("interrupted", False)
+        s = d.get("s", "I")
+        self.running     = 1 if s == "W" else 0
+        self.waiting     = 1 if s == "P" else 0
+        self.completed   = s == "C"
+        self.error       = "error" if s == "E" else ""
+        self.interrupted = False
+        self.msg         = d.get("m", "")
+        self.prompt      = {"tool": d.get("t", ""), "hint": d.get("h", ""), "id": ""} if s == "P" else None
+        self.category    = ""
 
 
 class MultiSessionMsg:
@@ -101,6 +101,8 @@ def parse(line: str):
     if "cmd" in d:
         return d
 
+    if "ss" in d:
+        return MultiSessionMsg(d["ss"])
     if "sessions" in d:
         return MultiSessionMsg(d["sessions"])
 
@@ -108,17 +110,8 @@ def parse(line: str):
     return StatusMsg(d)
 
 
-def build_decision(prompt_id: str, decision: str) -> str:
-    """
-    构建"审批决策"消息，发给 PC 端的 hook_bridge.py。
-
-    参数：
-      prompt_id  — 与请求中的 id 对应，用于 PC 端匹配
-      decision   — "once" 表示批准本次，"deny" 表示拒绝
-
-    返回以换行符结尾的 JSON 字符串（BLE 传输的消息边界）。
-    """
-    return ujson.dumps({"cmd": "permission", "id": prompt_id, "decision": decision}) + "\n"
+def build_decision(session_idx: int, decision: str) -> str:
+    return ujson.dumps({"d": decision, "n": session_idx}) + "\n"
 
 
 def build_ack(cmd: str, ok=True) -> str:

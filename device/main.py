@@ -52,6 +52,8 @@ def _print_msg(msg):
     if isinstance(msg, dict):
         print(f"[ack/cmd] {msg}")
         return
+    if _approval_pending:
+        return  # 审批等待中，静默丢弃打印，避免刷走输入提示
     if isinstance(msg, p.MultiSessionMsg):
         print(f"[MultiSessionMsg] {len(msg.sessions)} session(s):")
         for s in msg.sessions:
@@ -80,17 +82,16 @@ async def _async_input(prompt: str) -> str:
         await asyncio.sleep(0)
 
 
-async def _handle_approval(prompt, tool_id):
+async def _handle_approval(session_idx: int):
     global _approval_pending
     try:
         choice = await _async_input("  Input y=approve / n=deny, then Enter: ")
     except Exception:
         choice = "n"
     decision = "once" if choice == "y" else ("session" if choice == "s" else "deny")
-    reply = p.build_decision(tool_id, decision)
+    reply = p.build_decision(session_idx, decision)
     await ble_uart.send(reply)
     print(f"  → sent decision='{decision}'")
-    _approval_pending = False
 
 
 async def ble_recv_task():
@@ -118,17 +119,24 @@ async def render_task():
         _print_msg(msg)
 
         if _approval_pending:
-            continue
+            has_pending = False
+            if isinstance(msg, p.MultiSessionMsg):
+                has_pending = any(st.StateEvent.needs_approval(s) for s in msg.sessions)
+            elif isinstance(msg, p.StatusMsg):
+                has_pending = st.StateEvent.needs_approval(msg)
+            if has_pending:
+                continue  # 仍在等待 daemon 处理决策，丢弃重发消息
+            _approval_pending = False  # 解锁，继续处理这条消息
 
         if isinstance(msg, p.MultiSessionMsg):
-            for s in msg.sessions:
+            for i, s in enumerate(msg.sessions):
                 if st.StateEvent.needs_approval(s):
                     _approval_pending = True
-                    asyncio.create_task(_handle_approval(s.prompt, s.prompt["id"]))
+                    asyncio.create_task(_handle_approval(i))
                     break
         elif isinstance(msg, p.StatusMsg) and st.StateEvent.needs_approval(msg):
             _approval_pending = True
-            asyncio.create_task(_handle_approval(msg.prompt, msg.prompt["id"]))
+            asyncio.create_task(_handle_approval(0))
 
 
 async def _main():

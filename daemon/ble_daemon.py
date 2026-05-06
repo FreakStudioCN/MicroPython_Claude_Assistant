@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-# ble_daemon.py —— 长驻 BLE 桥接守护进程 (v3)
+# ble_daemon.py —— 长驻 BLE 桥接守护进程 (v4)
 #
 # 输入: hook_bridge.py 通过 TCP 57320 推 v2 envelope
 #       {type:"event", v:2, event:{kind, ...}, generic:{session_id, ...}}
-# 输出: 翻译为 protocol.py v3 多 session wire
-#       {"v":2, "sessions":[{id, running, waiting, completed, msg, category, error, interrupted, prompt}, ...]}
+# 输出: 翻译为 protocol.py v4 精简 wire（1-4 BLE chunks，原 v3 需 9-16 chunks）
+#       {"ss":[{"s":"I"}]}                                    → 1 chunk
+#       {"ss":[{"s":"W","m":"Bash"}]}                         → 2 chunks
+#       {"ss":[{"s":"P","t":"Bash","h":"cd /proj && gh pr"}]} → 3 chunks
+#       状态码: I=IDLE W=WORKING P=PENDING E=ERROR C=CELEBRATE
 #       通过 BLE NUS 写到 ESP32
+# 设备→PC 审批回传: {"d":"once"/"deny","n":session_idx}
 #
 # 状态机: 每个 session_id 独立 _Session 对象，彻底消除全局状态竞争
 #   approval 路径: 每个 _Session 有独立 decision_event/decision_value
@@ -128,24 +132,13 @@ def _on_notify(sender, data: bytearray):
                     _device_online = True
                 continue
 
-            # 处理审批决策
-            if msg.get("cmd") == "permission":
-                decision = msg.get("decision", "deny")
-                prompt_id = msg.get("id", "")
-                # 找到对应 tool_use_id 所属的 session
+            # 处理审批决策（新格式 {"d":"once","n":0}，无需 prompt_id）
+            if "d" in msg:
+                decision = msg["d"]
                 for sess in _sessions.values():
-                    if sess.approval_in_progress and sess.approval_queue:
-                        if sess.approval_queue[0] == prompt_id:
-                            sess.decision_value = decision
-                            if sess.decision_event:
-                                sess.decision_event.set()
-                            break
-                else:
-                    # 广播给所有等待审批的 session（兜底）
-                    for sess in _sessions.values():
-                        if sess.approval_in_progress and sess.decision_event:
-                            sess.decision_value = decision
-                            sess.decision_event.set()
+                    if sess.approval_in_progress and sess.decision_event:
+                        sess.decision_value = decision
+                        sess.decision_event.set()
         except Exception:
             pass
 
@@ -282,21 +275,24 @@ def _build_msg(sess: _Session) -> str:
 
 
 def _session_to_wire(sid: str, sess: _Session) -> dict:
-    return {
-        "id":          sid[:8],
-        "running":     _get_running_count(sess),
-        "waiting":     len(sess.approval_queue),
-        "completed":   sess.completed_until > time.time(),
-        "msg":         _build_msg(sess),
-        "category":    _get_current_category(sess),
-        "error":       sess.current_error,
-        "interrupted": sess.current_interrupted,
-        "prompt":      _build_prompt(sess),
-    }
+    now = time.time()
+    if sess.approval_queue:
+        tid = sess.approval_queue[0]
+        t = sess.tools.get(tid, {})
+        return {"s": "P", "t": t.get("tool", "")[:10], "h": t.get("summary", "")[:18]}
+    if sess.dizzy_until > now:
+        return {"s": "E"}
+    if sess.completed_until > now:
+        return {"s": "C"}
+    for t in sess.tools.values():
+        if t["status"] == "running":
+            summary = t.get("summary", "")[:10]
+            m = f"{t['tool']}: {summary}" if summary else t["tool"]
+            return {"s": "W", "m": m[:15]}
+    return {"s": "I"}
 
 
 def _to_device_wire() -> dict:
-    """v3 wire: sessions 数组，只含活跃 session。"""
     now = time.time()
     active = []
     for sid, sess in list(_sessions.items()):
@@ -305,7 +301,7 @@ def _to_device_wire() -> dict:
         special   = sess.completed_until > now or sess.dizzy_until > now
         if has_tools or recently or special:
             active.append(_session_to_wire(sid, sess))
-    return {"v": 2, "sessions": active}
+    return {"ss": active}
 
 
 def _mark_dirty():
@@ -369,8 +365,8 @@ async def _pusher_tick(last_pushed_wire):
         # completed 到期标 dirty
         if sess.completed_until > 0 and sess.completed_until <= now:
             if last_pushed_wire:
-                for s in last_pushed_wire.get("sessions", []):
-                    if s.get("completed"):
+                for s in last_pushed_wire.get("ss", []):
+                    if s.get("s") == "C":
                         _mark_dirty()
                         break
 
@@ -508,7 +504,9 @@ async def _handle_envelope(env: dict) -> dict:
             return {"decision": decision}
 
         # 设备在线 → 走原有审批流程
-        await _send(_to_device_wire())
+        _initial_wire = _to_device_wire()
+        await _send(_initial_wire)
+        _last_pushed_wire = _initial_wire
         _update_pending_send_ts()  # 启动重发限速计时
 
         if _stub:
