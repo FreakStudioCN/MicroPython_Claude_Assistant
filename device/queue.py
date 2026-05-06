@@ -3,6 +3,7 @@ try:
 except ImportError:
     import asyncio
 
+
 class Queue:
     def __init__(self):
         self._items = []
