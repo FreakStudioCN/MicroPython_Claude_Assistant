@@ -1,33 +1,34 @@
 # ============================================================
 # config.py —— 硬件引脚与全局常量配置
-# 目标板：Waveshare ESP32-S3-Touch-LCD-2（320×240 彩色触摸屏）
+# 目标板：ESP32-S3 触摸屏（ST7789 + CST816S，320×240 横屏）
 # ============================================================
 
 # ── 显示屏参数（ST7789 驱动，SPI 接口）──────────────────────
-LCD_WIDTH  = 320        # 屏幕宽度（像素）
-LCD_HEIGHT = 240        # 屏幕高度（像素）
-SPI_BUS    = 2          # 使用 ESP32-S3 的 SPI2 总线（HSPI）
+LCD_WIDTH  = 240        # 物理宽度（竖屏方向，旋转后变高度）
+LCD_HEIGHT = 320        # 物理高度（竖屏方向，旋转后变宽度）
+SCREEN_W   = 320        # 逻辑宽度（横屏后）
+SCREEN_H   = 240        # 逻辑高度（横屏后）
+SPI_BUS    = 2
 
-SPI_FREQ   = 40_000_000 # SPI 时钟频率：40 MHz（ST7789 最高支持 80 MHz）
+SPI_FREQ   = 40_000_000
 
-# SPI 信号线 GPIO 编号
-LCD_SCLK   = 39        # SPI 时钟线（SCLK / CLK）
-LCD_MOSI   = 38        # SPI 数据输出（MOSI / DIN）
-LCD_MISO   = 40        # SPI 数据输入（MISO，此屏通常不用但需占用）
-LCD_DC     = 42        # 数据/命令选择线（D/C，高=数据，低=命令）
-LCD_CS     = 45        # 片选信号（低电平有效）
-LCD_BL     = 1         # 背光控制（PWM 输出，控制亮度）
+LCD_SCLK   = 39
+LCD_MOSI   = 38
+LCD_MISO   = 40
+LCD_DC     = 42
+LCD_CS     = 45
+LCD_BL     = 1
+
+# 帧缓冲大小：28800 字节（和测试代码一致）
+FB_SIZE    = 28800
 
 # ── 触摸屏参数（CST816S 驱动，I2C 接口）──────────────────────
-I2C_BUS  = 0           # 使用 ESP32-S3 的 I2C0 总线
-I2C_FREQ = 400_000     # I2C 时钟频率：400 kHz（Fast Mode）
-TP_SDA   = 48          # I2C 数据线（SDA）
-TP_SCL   = 47          # I2C 时钟线（SCL）
-TP_ADDR  = 0x15        # CST816S 的 I2C 从设备地址（固定为 0x15）
-
-# ── 按钮 ────────────────────────────────────────────────────
-BTN_A = 0              # GPIO 0 即板载 BOOT 按钮，用作"审批/确认"键
-                       # 按下 = 低电平（内部上拉，PULL_UP）
+I2C_BUS    = 0
+I2C_FREQ   = 400_000
+TP_SDA     = 48
+TP_SCL     = 47
+TP_ADDR    = 0x15
+TP_REGBITS = 8
 
 # ── 蓝牙低功耗（BLE）配置 ────────────────────────────────────
 BLE_NAME    = "Claude-Buddy"                        # BLE 广播名称，PC 端用此名搜索设备

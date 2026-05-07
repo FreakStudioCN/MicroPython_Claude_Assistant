@@ -3,54 +3,65 @@ try:
 except ImportError:
     import asyncio
 
-from transport import BleTransport
+import gc
 from queue import Queue
+from display_renderer import DisplayRenderer
 import protocol as p
-import state as st
 
-_transport = BleTransport()
+_transport = None
 _msg_queue = None
-
-
-def _print_status(s):
-    state = st.StateEvent.get_base_state(s)
-    print(f"  running={s.running} waiting={s.waiting} completed={s.completed}")
-    print(f"  msg={s.msg!r} state={st.STATE_NAMES[state]} needs_approval={st.StateEvent.needs_approval(s)}")
-    if s.error:
-        print(f"  error={s.error!r}")
-
-
-def _print_msg(msg):
-    if msg is None:
-        print("[parse] None — skipped")
-        return
-    if isinstance(msg, dict):
-        print(f"[ack/cmd] {msg}")
-        return
-    print(f"[MultiSessionMsg] {len(msg.sessions)} session(s):")
-    for s in msg.sessions:
-        _print_status(s)
+_renderer = None
 
 
 async def ble_recv_task():
     while True:
         print("[ble] waiting for PC connection...")
         await _transport.connect()
+        await _renderer.on_connect()
         print("[ble] connected")
         while _transport.connected():
             line = await _transport.recv_line()
             _msg_queue.put_nowait(p.parse(line))
+        await _renderer.on_disconnect()
         print("[ble] disconnected")
 
 
 async def render_task():
     while True:
         msg = await _msg_queue.get()
-        _print_msg(msg)
+        if msg is not None:
+            await _renderer.render(msg)
 
 
 async def _main():
-    global _msg_queue
+    global _msg_queue, _renderer, _transport
+
+    # 启动延时 3s，方便 mpremote 连接
+    print("[init] waiting 3s for mpremote connection...")
+    await asyncio.sleep(3)
+
+    # 初始状态内存
+    gc.collect()
+    print(f"[mem] startup: free={gc.mem_free()} alloc={gc.mem_alloc()}")
+
+    # 1. 先初始化 LVGL（占用帧缓冲）
+    _renderer = DisplayRenderer()
+    await _renderer.init()
+    gc.collect()
+    print(f"[mem] after UI: free={gc.mem_free()} alloc={gc.mem_alloc()}")
+    print("[init] LVGL initialized")
+
+    # 2. 再导入 BLE（此时帧缓冲已分配，剩余内存给 BLE）
+    print("[init] loading BLE stack...")
+    from transport import BleTransport
+    gc.collect()
+    print(f"[mem] after import: free={gc.mem_free()} alloc={gc.mem_alloc()}")
+
+    _transport = BleTransport()
+    gc.collect()
+    print(f"[mem] after BLE init: free={gc.mem_free()} alloc={gc.mem_alloc()}")
+    print("[init] BLE transport loaded")
+
     _msg_queue = Queue()
     await asyncio.gather(ble_recv_task(), render_task())
 
