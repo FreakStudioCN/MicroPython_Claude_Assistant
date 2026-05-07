@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-# hook_bridge.py —— Claude Code hook 上位机接收层 (v2 envelope)
+# hook_bridge.py —— Claude Code hook 上位机接收层 (v5 纯展示版)
 #
 # 链路: Claude Code hook → stdin → 字段规整 → v2 envelope → TCP 57320
 #       → ble_daemon.py → BLE → ESP32
+#
+# v5 变化: 设备仅展示状态，不参与审批
+#   - 所有 hook 事件推送到 daemon → 设备显示状态
+#   - 审批由 Claude Code 自己在终端 UI 完成
+#   - hook_bridge 始终返回 {}，不干预审批流程
 #
 # 字段规整覆盖 8 类已观测真实触发的 hook (依据 ~/.claude_buddy/probe.jsonl 实测):
 #   PreToolUse / PostToolUse / PostToolUseFailure / PostToolBatch /
 #   SubagentStart / Notification / UserPromptSubmit / StopFailure
 # 其余 21 类 settings.json 注册了但当前 Claude Code 版本未冒,fallback 走 unknown.
 #
-# 阻塞语义: 仅 PreToolUse on {Bash, Write, Edit} 同步等 daemon 回 once/deny.
+# 阻塞语义: 无阻塞，所有 hook 立即返回 {}。
 # daemon 不可达时 fail-open (返回 {}),保证硬件离线不会拖死 Claude Code.
 
 import json
@@ -37,7 +42,7 @@ except ImportError:
 HOST = "127.0.0.1"
 PORT = 57320
 CONNECT_TIMEOUT = 1.0     # localhost connect 应该 ms 级,1s 是 daemon 卡死的兜底
-RECV_TIMEOUT = 70         # 覆盖 daemon 端 60s approval 窗口 + 10s 心跳检测缓冲
+RECV_TIMEOUT = 5          # v5: daemon 不再等待审批，5s 足够
 MAX_STDIN_BYTES = 1 << 20  # 1MB hook payload 上限,防超大 tool_response 内存炸
 # NotebookEdit 归 edit 类但不需审批：notebook 编辑操作危险性低于直接文件写入，
 # 且 notebook cell 输出可在 Claude Code UI 中直接查看，无需额外硬件确认。
@@ -275,8 +280,7 @@ NORMALIZERS = {
 
 def _call_daemon(envelope: dict) -> dict:
     """同步 socket 调用。daemon 不可达 / 超时 / JSON 错都 fail-open 返回 {}。
-    connect 用短超时 (1s) 防 daemon 卡死时拖死 Claude Code,
-    recv 用长超时 (35s) 覆盖 approval 窗口。"""
+    v5: daemon 立即返回，无需长超时等待。"""
     try:
         with socket.create_connection((HOST, PORT), timeout=CONNECT_TIMEOUT) as s:
             s.settimeout(RECV_TIMEOUT)
@@ -312,16 +316,10 @@ def main():
     normalize = NORMALIZERS.get(hook, _normalize_fallback)
     envelope = normalize(event)
 
-    resp = _call_daemon(envelope)
-
-    # 仅 PreToolUse on approval tool 时让 daemon 决定阻塞;其它 hook resp 一律忽略
-    if hook == "PreToolUse" and resp.get("decision") == "deny":
-        print(json.dumps({
-            "decision": "block",
-            "reason":   "Denied by hardware buddy",
-        }))
-    else:
-        print(json.dumps({}))
+    # v5: 所有事件推送到 daemon，让设备显示状态
+    # 不干预审批流程，始终返回 {}
+    _call_daemon(envelope)
+    print(json.dumps({}))
 
 
 if __name__ == "__main__":

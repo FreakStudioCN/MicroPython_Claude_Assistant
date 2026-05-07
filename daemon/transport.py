@@ -30,8 +30,6 @@ class Transport:
 
 NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-HEARTBEAT_INTERVAL_S = 10.0
-HEARTBEAT_TIMEOUT_S  = 30.0
 
 
 def _get_config_path() -> Path:
@@ -59,11 +57,8 @@ class BleTransport(Transport):
     def __init__(self):
         self._client       = None
         self._connected    = False
-        self._device_online = False
         self._rx_buf       = ""
         self._send_lock    = None   # 初始化在 start()（需要 event loop）
-        self._last_pong_ts = 0.0
-        self._last_ping_ts = 0.0
 
         self._on_recv       = None
         self._on_connect    = None
@@ -85,10 +80,7 @@ class BleTransport(Transport):
         self._on_connect    = on_connect
         self._on_disconnect = on_disconnect
         self._send_lock     = asyncio.Lock()
-        await asyncio.gather(
-            self._connect_loop(),
-            self._heartbeat_loop(),
-        )
+        await self._connect_loop()
 
     async def send(self, payload: dict):
         data = (json.dumps(payload) + "\n").encode()
@@ -99,9 +91,6 @@ class BleTransport(Transport):
 
     def connected(self) -> bool:
         return self._connected
-
-    def device_online(self) -> bool:
-        return self._device_online
 
     # ── 内部 BLE 回调 ────────────────────────────────────────
 
@@ -119,12 +108,6 @@ class BleTransport(Transport):
                 continue
             try:
                 msg = json.loads(line)
-                if msg.get("ack") == "pong":
-                    self._last_pong_ts = time.time()
-                    if not self._device_online:
-                        print("[heartbeat] device back online")
-                        self._device_online = True
-                    continue
                 if self._on_recv:
                     self._on_recv(msg)
             except Exception:
@@ -168,8 +151,6 @@ class BleTransport(Transport):
                 await self._client.connect()
                 await self._client.start_notify(NUS_TX, self._on_ble_notify)
                 self._connected     = True
-                self._device_online = True
-                self._last_pong_ts  = time.time()
                 print(f"[daemon] connected to {addr}")
                 if self._on_connect:
                     self._on_connect()
@@ -178,25 +159,9 @@ class BleTransport(Transport):
                 print(f"[daemon] connect failed: {e}")
                 self._client        = None
                 self._connected     = False
-                self._device_online = False
                 await asyncio.sleep(3)
 
-    # ── 心跳循环 ─────────────────────────────────────────────
-
-    async def _heartbeat_loop(self):
-        while True:
-            if self._connected:
-                self._last_ping_ts = time.time()
-                await self.send({"cmd": "ping", "ts": self._last_ping_ts})
-                await asyncio.sleep(HEARTBEAT_INTERVAL_S)
-                if time.time() - self._last_pong_ts > HEARTBEAT_TIMEOUT_S:
-                    if self._device_online:
-                        print("[heartbeat] device offline (no pong for 30s)")
-                        self._device_online = False
-                        if self._on_recv:
-                            self._on_recv({"_event": "offline"})
-            else:
-                await asyncio.sleep(1.0)
+    # ── 连接循环结束 ─────────────────────────────────────────
 
 
 # ── WiFi 实现（预留） ─────────────────────────────────────────
@@ -206,7 +171,6 @@ class WifiTransport(Transport):
     async def start(self, on_recv, on_connect, on_disconnect): raise NotImplementedError
     async def send(self, payload: dict): raise NotImplementedError
     def connected(self) -> bool: raise NotImplementedError
-    def device_online(self) -> bool: raise NotImplementedError
 
 
 # ── 串口实现（预留） ─────────────────────────────────────────
@@ -216,4 +180,3 @@ class UartTransport(Transport):
     async def start(self, on_recv, on_connect, on_disconnect): raise NotImplementedError
     async def send(self, payload: dict): raise NotImplementedError
     def connected(self) -> bool: raise NotImplementedError
-    def device_online(self) -> bool: raise NotImplementedError

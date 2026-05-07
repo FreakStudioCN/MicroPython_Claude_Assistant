@@ -28,9 +28,9 @@
 |------|--------|--------|------|------|
 | `daemon/transport.py` | 219 | 182 | -37 (-17%) | ✅ 完成 |
 | `daemon/ble_daemon.py` | 601 | 407 | -194 (-32%) | ✅ 完成 |
-| `daemon/hook_bridge.py` | 328 | 403 | +75 (+23%) | ✅ 完成 |
+| `daemon/hook_bridge.py` | 328 | 326 | -2 (-1%) | ✅ 完成 |
 | `tests/test_daemon_state.py` | 468 | 435 | -33 (-7%) | ✅ 完成 |
-| **总计** | **1616** | **1427** | **-189 (-12%)** | ✅ 完成 |
+| **总计** | **1616** | **1350** | **-266 (-16%)** | ✅ 完成 |
 
 ### 已删除文件
 
@@ -124,51 +124,32 @@ if kind == "tool_start":
 
 ---
 
-### 3.3 daemon/hook_bridge.py (+75 行)
-
-**新增内容**：
-- `_terminal_approval()` 函数（~40 行）：
-  - 在终端显示审批提示
-  - 等待用户输入 y/s/n
-  - 返回决策：once/session/deny
-
-- `_notify_device_pending()` 函数（~30 行）：
-  - 单向推送 PENDING 状态到设备
-  - 不等待响应
-  - 失败时静默忽略
+### 3.3 daemon/hook_bridge.py (-2 行)
 
 **修改内容**：
 - 更新文件头注释为 v5 版本说明
 - `RECV_TIMEOUT` 从 70 秒降到 5 秒
-- `main()` 函数重构：
-  - PreToolUse 时调用 `_terminal_approval()`
-  - 非审批工具推送状态到 daemon
+- 简化 `main()` 函数：所有事件推送到 daemon，始终返回 `{}`
+
+**核心理念**：
+- ✅ 设备是"氛围设备"，只展示状态
+- ✅ 审批由 Claude Code 自己在终端 UI 完成
+- ✅ hook_bridge 不干预审批流程
+- ✅ daemon 不等待任何响应
 
 **关键代码**：
 ```python
-def _terminal_approval(tool: str, summary: str, risk_level: str) -> str:
-    # 推送提醒到设备（单向）
-    try:
-        _notify_device_pending(tool, summary)
-    except Exception:
-        pass
+def main():
+    # ... 解析 hook 输入 ...
+    
+    hook = event.get("hook_event_name", "")
+    normalize = NORMALIZERS.get(hook, _normalize_fallback)
+    envelope = normalize(event)
 
-    # 终端审批提示
-    print(f"\n{'='*60}", file=sys.stderr)
-    print(f"⚠️  APPROVAL REQUIRED", file=sys.stderr)
-    print(f"Tool: {tool}", file=sys.stderr)
-    print(f"Command: {summary}", file=sys.stderr)
-    print(f"Risk: {risk_level}", file=sys.stderr)
-    print(f"{'='*60}", file=sys.stderr)
-    print(f"[y] Approve once  [s] Approve session  [n] Deny: ",
-          file=sys.stderr, end="", flush=True)
-
-    try:
-        choice = input().strip().lower()
-        decision_map = {"y": "once", "s": "session", "n": "deny"}
-        return decision_map.get(choice, "deny")
-    except (EOFError, KeyboardInterrupt):
-        return "deny"
+    # v5: 所有事件推送到 daemon，让设备显示状态
+    # 不干预审批流程，始终返回 {}
+    _call_daemon(envelope)
+    print(json.dumps({}))
 ```
 
 ---
@@ -265,24 +246,27 @@ Claude Code 继续执行
 Claude Code
   ↓ Hook
 hook_bridge.py
-  ├─→ 终端审批提示（阻塞等待用户输入）
-  │   ↓ y/n
-  │   ↓ 立即返回
-  └─→ 单向推送状态到 daemon
-      ↓ TCP 57320
+  ↓ 推送状态到 daemon（不干预审批）
+  ↓ TCP 57320
 ble_daemon.py
   ↓ BLE NUS (单向)
 ESP32 设备（纯展示）
   ↓ 显示状态 + 闪烁提醒
+
+同时：
+Claude Code 自己在终端 UI 显示审批提示
+  ↓ 用户在 Claude Code UI 中操作
+  ↓ 审批完成
+Claude Code 继续执行
 ```
 
 **优势**：
-- ✅ 审批即时完成（无超时）
-- ✅ 用户看到完整命令
-- ✅ 键盘操作更快
+- ✅ 审批在 Claude Code UI 完成（原生体验）
+- ✅ 设备只负责"氛围提醒"
+- ✅ hook_bridge 不干预审批流程
 - ✅ 单向通信更简单
 - ✅ 无需心跳机制
-- ✅ 代码减少 12%
+- ✅ 代码减少 16%
 
 ---
 
@@ -320,11 +304,11 @@ ESP32 设备（纯展示）
 
 | 指标 | v4 | v5 | 改进 |
 |------|----|----|------|
+| **审批位置** | 设备触摸 | Claude Code UI | 原生体验 |
 | **审批速度** | 60s 超时 | 即时 | ∞ |
 | **信息完整性** | 18 字符 | 完整命令 | 100% |
-| **操作便利性** | 触摸 | 键盘 | 更快 |
-| **视觉反馈** | 审批 UI | 闪烁提醒 | 保留 |
-| **代码复杂度** | 1616 行 | 1427 行 | -12% |
+| **设备角色** | 操作设备 | 氛围设备 | 更清晰 |
+| **代码复杂度** | 1616 行 | 1350 行 | -16% |
 | **BLE 流量** | 双向 | 单向 | -50% |
 
 ---

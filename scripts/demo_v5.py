@@ -132,11 +132,11 @@ async def demo():
     print("\n" + "="*60)
     print("V5 架构特点总结")
     print("="*60)
-    print("✅ 审批在终端完成（hook_bridge.py）")
-    print("✅ daemon 不再等待审批，立即返回")
-    print("✅ 设备仅展示状态，无审批 UI")
-    print("✅ 单向通信，无需心跳")
-    print("✅ 代码简化 12%")
+    print("[OK] 审批在终端完成（hook_bridge.py）")
+    print("[OK] daemon 不再等待审批，立即返回")
+    print("[OK] 设备仅展示状态，无审批 UI")
+    print("[OK] 单向通信，无需心跳")
+    print("[OK] 代码简化 12%")
     print()
 
 

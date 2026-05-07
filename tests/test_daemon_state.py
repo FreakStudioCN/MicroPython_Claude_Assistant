@@ -14,10 +14,9 @@
 #   2. task_complete 推断: 4s 静默触发一次, 不重复推
 #   3. tool_error 后跨过 dizzy 也不被庆祝 (codex P2 bug 1)
 #   4. task_error (StopFailure) 同上 (codex P2 bug 1 task variant)
-#   5. approval deny / timeout 后不被立刻庆祝 (codex P2 bug 2)
-#   6. user_prompt 清 completed pulse + 清 has_subagent
-#   7. 5Hz 节流: 同 wire 不重复推
-#   8. subagent_start 设置 has_subagent, completed 阈值变 8s
+#   5. user_prompt 清 completed pulse + 清 has_subagent
+#   6. 5Hz 节流: 同 wire 不重复推
+#   7. subagent_start 设置 has_subagent, completed 阈值变 8s
 #   9. 并行工具: 多个 tool_use_id 同时在 tools 中
 #   10. wire sessions 字段: category/error/interrupted
 
@@ -77,11 +76,8 @@ def _any_completed(wires=None):
 class _MockTransport:
     def __init__(self, online=True):
         self._connected_val = online
-        self._device_online_val = online
-        self._last_ping_ts = 0.0
 
     def connected(self): return self._connected_val
-    def device_online(self): return self._device_online_val
 
 
 # ── reset all daemon state ─────────────────────────────
@@ -223,38 +219,6 @@ async def test_task_error_no_celebrate():
     n = _any_completed()
     _assert(n == 0, f"task_error 后不应庆祝, 推了 {n} 次")
     print("  ok  task_error 跨 dizzy 8s 后无 completed (codex P2 bug 1 task)")
-
-
-async def test_approval_deny_no_celebrate():
-    """⚡ codex P2 bug 2 regression. 用真 wait_for + 极短 timeout 模拟 deny。"""
-    _reset()
-    d._stub = False
-    d._transport = _MockTransport(online=True)  # 模拟设备在线，否则会触发离线自动批准
-    orig_to = d.APPROVAL_TIMEOUT_S
-    d.APPROVAL_TIMEOUT_S = 0.05  # 50ms 真实 wall wait_for
-    try:
-        env = _env_pre("Bash", "rm -rf /", needs_approval=True, tool_use_id="t1", category="exec")
-        resp = await d._handle_envelope(env)
-        _assert(resp.get("decision") == "deny", f"expected deny, got {resp}")
-
-        sess = _sess()
-        # last_activity_ts 应被刷到 wait 之后的 mock clock 值 (仍 100.0)
-        _assert(sess.last_activity_ts == 100.0,
-                f"last_activity_ts not refreshed: {sess.last_activity_ts}")
-        # completed_inferred_for_ts 应锁住等于 last_activity_ts
-        _assert(sess.completed_inferred_for_ts == sess.last_activity_ts,
-                "deny path should lock inference guard")
-
-        # 时间快进 100s, pusher 不应推 completed
-        _adv(100.0)
-        last = None
-        for _ in range(5):
-            last = await d._pusher_tick(last)
-        n = _any_completed()
-        _assert(n == 0, f"deny 后跨 100s 也不应庆祝, 推了 {n} 次")
-    finally:
-        d.APPROVAL_TIMEOUT_S = orig_to
-    print("  ok  approval deny → no celebrate over 100s (codex P2 bug 2)")
 
 
 async def test_user_prompt_clears_completed():
@@ -471,7 +435,6 @@ async def main():
         test_task_complete_one_shot,
         test_tool_error_no_celebrate,
         test_task_error_no_celebrate,
-        test_approval_deny_no_celebrate,
         test_user_prompt_clears_completed,
         test_throttle_no_dup_push,
         test_subagent_threshold,
