@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
-# ble_daemon.py —— 长驻 BLE 桥接守护进程 (v4)
+# ble_daemon.py —— 长驻 BLE 桥接守护进程 (v5 纯展示版)
 #
 # 输入: hook_bridge.py 通过 TCP 57320 推 v2 envelope
 #       {type:"event", v:2, event:{kind, ...}, generic:{session_id, ...}}
-# 输出: 翻译为 protocol.py v4 精简 wire（1-4 BLE chunks，原 v3 需 9-16 chunks）
-#       {"ss":[{"s":"I"}]}                                    → 1 chunk
-#       {"ss":[{"s":"W","m":"Bash"}]}                         → 2 chunks
-#       {"ss":[{"s":"P","t":"Bash","h":"cd /proj && gh pr"}]} → 3 chunks
-#       状态码: I=IDLE W=WORKING P=PENDING E=ERROR C=CELEBRATE
+# 输出: 翻译为 protocol.py v5 精简 wire（1-3 BLE chunks）
+#       {"ss":[{"s":"I"}]}                    → 1 chunk
+#       {"ss":[{"s":"W","m":"Bash"}]}         → 2 chunks
+#       {"ss":[{"s":"W","m":"Read: main.py"}]} → 3 chunks
+#       状态码: I=IDLE W=WORKING E=ERROR C=CELEBRATE
 #       通过 BLE NUS 写到 ESP32
-# 设备→PC 审批回传: {"d":"once"/"deny","n":session_idx}
 #
-# 状态机: 每个 session_id 独立 _Session 对象，彻底消除全局状态竞争
-#   approval 路径: 每个 _Session 有独立 decision_event/decision_value
-#                  多 session 同时等审批互不干扰
+# v5 变化: 删除设备审批，改为纯展示 + 终端审批
+#   - 删除 PENDING 状态（审批在终端完成）
+#   - 删除设备→PC 审批回传
+#   - 删除心跳机制（单向推送）
+#   - 简化状态机（无审批队列）
+#
+# 状态机: 每个 session_id 独立 _Session 对象
 #
 # 推断兜底 (Stop hook 不冒,只能从沉默期推):
-#   session._tools==0 and _approval_queue==0 and now-last_activity > threshold
+#   session._tools==0 and now-last_activity > threshold
 #     → completed=True 短暂 (CELEBRATE 触发后清掉)
 #     threshold = 8s if has_subagent else 4s
 #
 # 5Hz 节流: 状态变化只标 dirty, 单独 _pusher_task 每 200ms 推一次
-#           approval 路径绕过节流同步推 (不能让用户等)
 #
 # session 生命周期:
 #   活跃 (has_tools or recently_active or special_state) → 纳入 wire sessions 数组
@@ -42,18 +44,12 @@ HOST = "127.0.0.1"
 PORT = 57320
 
 # 业务常量
-APPROVAL_TIMEOUT_S = int(__import__('os').environ.get("APPROVAL_TIMEOUT_S", 60))
 PUSH_INTERVAL_S = 0.2          # 5Hz throttle
 TASK_COMPLETE_QUIET_S = 4.0    # PostTool 后 N 秒无新 PreTool → 推断 task_complete
 COMPLETED_HOLD_S = 2.0         # completed=True 持续秒数 (覆盖 CELEBRATE 3s)
 DIZZY_HOLD_S = 3.0             # tool_error / task_error msg="error" 持续秒数
 SESSION_ACTIVE_TIMEOUT_S = 10.0  # 超过此时间无活动的 IDLE session 不纳入 wire
-SESSION_CLEANUP_S = 30.0         # 超过此时间清理 session 对象
-HEARTBEAT_INTERVAL_S = 10.0      # 心跳间隔
-HEARTBEAT_TIMEOUT_S = 30.0       # 3 次心跳未响应 → 判定离线
-POST_PING_COOLDOWN_S = 0.3       # ping 发出后屏蔽 BLE 推送的静默期（避免 pong 写入时丢包）
-MIN_PENDING_RESEND_S = 1.0       # PENDING 重发最小间隔（防止 200ms 连发淹没 BLE 队列）
-MAX_PENDING_RESENDS = 5          # 每次审批最多重发 5 次（之后认为设备已收到）
+SESSION_CLEANUP_S = 10.0         # 超过此时间清理 session 对象
 
 # 设备 wire msg 字段值
 MSG_ERROR = "error"
@@ -66,7 +62,6 @@ APPROVE_PREFIX = "approve: "
 class _Session:
     def __init__(self):
         self.tools: dict = {}       # tool_use_id → {tool, category, summary, status, ts}
-        self.approval_queue: list = []
         self.has_subagent: bool = False
         self.current_error: str = ""
         self.current_interrupted: bool = False
@@ -74,10 +69,6 @@ class _Session:
         self.completed_until: float = 0.0
         self.completed_inferred_for_ts: float = 0.0
         self.dizzy_until: float = 0.0
-        self.decision_event: Optional[asyncio.Event] = None  # 懒初始化
-        self.decision_value: Optional[str] = None
-        self.approval_in_progress: bool = False
-        self.pending_resend_count: int = 0  # 当前审批已重发次数
 
 
 _sessions: dict = {}   # session_id → _Session
@@ -92,46 +83,19 @@ _transport: Optional[BleTransport] = None
 
 # ── 业务层全局 ────────────────────────────────────────────
 _lock = None
-_last_pending_send_ts = 0.0    # 最后一次推送 PENDING 状态的时间戳（用于 MIN_PENDING_RESEND）
-_last_pushed_wire = None       # 最后推送的 wire（pusher 和 approval 共享，防止重复推送）
+_last_pushed_wire = None       # 最后推送的 wire（pusher 用，防止重复推送）
 
 
 # ── BLE 回调（业务层处理） ────────────────────────────────────
-def _on_transport_recv(msg: dict):
-    """处理设备发来的消息（审批决策）。pong 已在 BleTransport 内处理。"""
-    if "d" in msg:
-        decision = msg["d"]
-        for sess in _sessions.values():
-            if sess.approval_in_progress and sess.decision_event:
-                sess.decision_value = decision
-                sess.decision_event.set()
-    elif msg.get("_event") == "offline":
-        _resolve_pending_approvals_on_offline()
-
-
 def _on_transport_connect():
     """BLE 重连成功：有活跃 session 时触发状态推送。"""
-    print("[daemon] disconnected, will reconnect..." if not _transport.connected() else "")
+    print("[daemon] connected" if _transport.connected() else "")
     if _sessions:
         _mark_dirty()
 
 
 def _on_transport_disconnect():
     print("[daemon] disconnected, will reconnect...")
-
-
-def _resolve_pending_approvals_on_offline():
-    """设备掉线时，立刻按 risk_level 解决所有进行中的审批，避免卡到超时。"""
-    for sid, sess in _sessions.items():
-        if not sess.approval_in_progress or not sess.approval_queue:
-            continue
-        tid = sess.approval_queue[0]
-        risk = sess.tools.get(tid, {}).get("risk_level", "normal")
-        decision = "once" if risk in {"safe", "normal"} else "deny"
-        print(f"[heartbeat] offline → resolve approval {tid[:8]} risk={risk} → {decision}")
-        sess.decision_value = decision
-        if sess.decision_event:
-            sess.decision_event.set()
 
 
 async def _send(payload: dict):
@@ -152,35 +116,13 @@ def _get_running_count(sess: _Session) -> int:
 
 
 def _get_current_category(sess: _Session) -> str:
-    if sess.approval_queue:
-        tid = sess.approval_queue[0]
-        if tid in sess.tools:
-            return sess.tools[tid].get("category", "")
     for t in sess.tools.values():
         if t["status"] == "running":
             return t.get("category", "")
     return ""
 
 
-def _build_prompt(sess: _Session) -> Optional[dict]:
-    if not sess.approval_queue:
-        return None
-    tid = sess.approval_queue[0]
-    if tid not in sess.tools:
-        return None
-    t = sess.tools[tid]
-    return {
-        "id": tid,
-        "tool": t["tool"],
-        "hint": t["summary"][:80] if t["summary"] else ""
-    }
-
-
 def _build_msg(sess: _Session) -> str:
-    if sess.approval_queue:
-        tid = sess.approval_queue[0]
-        if tid in sess.tools:
-            return APPROVE_PREFIX + sess.tools[tid]["tool"]
     now = time.time()
     if sess.dizzy_until > now:
         return MSG_ERROR
@@ -195,10 +137,6 @@ def _build_msg(sess: _Session) -> str:
 
 def _session_to_wire(sid: str, sess: _Session) -> dict:
     now = time.time()
-    if sess.approval_queue:
-        tid = sess.approval_queue[0]
-        t = sess.tools.get(tid, {})
-        return {"s": "P", "t": t.get("tool", "")[:10], "h": t.get("summary", "")[:18]}
     if sess.dizzy_until > now:
         return {"s": "E"}
     if sess.completed_until > now:
@@ -215,7 +153,7 @@ def _to_device_wire() -> dict:
     now = time.time()
     active = []
     for sid, sess in list(_sessions.items()):
-        has_tools = bool(sess.tools) or bool(sess.approval_queue)
+        has_tools = bool(sess.tools)
         recently  = sess.last_activity_ts > 0 and (now - sess.last_activity_ts) < SESSION_ACTIVE_TIMEOUT_S
         special   = sess.completed_until > now or sess.dizzy_until > now
         if has_tools or recently or special:
@@ -233,15 +171,9 @@ def _clear_dirty():
     _dirty = False
 
 
-def _update_pending_send_ts():
-    global _last_pending_send_ts
-    _last_pending_send_ts = time.time()
-
-
 def _enter_error_state(sess: _Session, now: float, hard_reset: bool, error_msg: str, is_interrupt: bool) -> None:
     if hard_reset:
         sess.tools.clear()
-        sess.approval_queue.clear()
 
     sess.current_error = error_msg[:80] if error_msg else ""
     sess.current_interrupted = is_interrupt
@@ -260,7 +192,7 @@ async def _pusher_tick(last_pushed_wire):
 
     # 清理长期无活动 session
     for sid in [k for k, s in list(_sessions.items())
-                if not s.tools and not s.approval_queue
+                if not s.tools
                 and s.last_activity_ts > 0
                 and now - s.last_activity_ts > SESSION_CLEANUP_S]:
         del _sessions[sid]
@@ -270,7 +202,6 @@ async def _pusher_tick(last_pushed_wire):
         threshold = 8.0 if sess.has_subagent else TASK_COMPLETE_QUIET_S
         if (
             len(sess.tools) == 0
-            and len(sess.approval_queue) == 0
             and sess.last_activity_ts > 0
             and now - sess.last_activity_ts > threshold
             and sess.completed_inferred_for_ts != sess.last_activity_ts
@@ -279,7 +210,7 @@ async def _pusher_tick(last_pushed_wire):
             sess.completed_until = now + COMPLETED_HOLD_S
             sess.completed_inferred_for_ts = sess.last_activity_ts
             _mark_dirty()
-            print(f"[infer] task_complete session={sess_id[:8]!r} (quiet={now - sess.last_activity_ts:.1f}s)")
+            print(f"[infer] task_complete session={sess_id!r} (quiet={now - sess.last_activity_ts:.1f}s)")
 
         # completed 到期标 dirty
         if sess.completed_until > 0 and sess.completed_until <= now:
@@ -289,32 +220,12 @@ async def _pusher_tick(last_pushed_wire):
                         _mark_dirty()
                         break
 
-    # ping 刚发出时屏蔽推送，避免 ESP32 写 pong 期间丢包
-    last_ping = _transport._last_ping_ts if _transport else 0.0
-    in_cooldown = (now - last_ping) < POST_PING_COOLDOWN_S
-    if in_cooldown:
-        return last_pushed_wire
-
-    has_pending = any(sess.approval_queue for sess in _sessions.values())
-    # 1s 限速 + 最多重发 5 次：避免淹没 BLE 队列，5 次后认为设备已收到
-    pending_resend_due = (
-        has_pending
-        and (now - _last_pending_send_ts) >= MIN_PENDING_RESEND_S
-        and any(sess.pending_resend_count < MAX_PENDING_RESENDS
-                for sess in _sessions.values() if sess.approval_queue)
-    )
-
-    if _dirty or pending_resend_due:
+    if _dirty:
         wire = _to_device_wire()
-        if wire != last_pushed_wire or pending_resend_due:
+        if wire != last_pushed_wire:
             await _send(wire)
             last_pushed_wire = wire
             _last_pushed_wire = wire
-            if pending_resend_due:
-                _update_pending_send_ts()
-                for sess in _sessions.values():
-                    if sess.approval_queue:
-                        sess.pending_resend_count += 1
         _dirty = False
     return last_pushed_wire
 
@@ -331,12 +242,10 @@ async def _handle_envelope(env: dict) -> dict:
     """根据 event.kind 改对应 session 的状态。返回给 hook_bridge 的 dict。"""
     session_id = env.get("generic", {}).get("session_id", "") or "default"
     sess = _sessions.setdefault(session_id, _Session())
-    if sess.decision_event is None:
-        sess.decision_event = asyncio.Event()
 
     event = env.get("event") or {}
     kind = event.get("kind", "")
-    print(f"[req v2] session={session_id[:8]!r} kind={kind!r}")
+    print(f"[req v2] session={session_id!r} kind={kind!r}")
 
     now = time.time()
 
@@ -345,7 +254,6 @@ async def _handle_envelope(env: dict) -> dict:
         tool_use_id = event.get("tool_use_id", "")
         category = event.get("tool_category", "")
         summary = event.get("summary", "")
-        risk_level = event.get("risk_level", "normal")
 
         if not tool_use_id:
             print(f"[warn] tool_start missing tool_use_id, ignoring")
@@ -355,110 +263,12 @@ async def _handle_envelope(env: dict) -> dict:
             "tool": tool,
             "category": category,
             "summary": summary,
-            "status": "waiting" if event.get("needs_approval") else "running",
+            "status": "running",
             "ts": now,
-            "risk_level": risk_level,
         }
         sess.last_activity_ts = now
-
-        if not event.get("needs_approval"):
-            _mark_dirty()
-            return {"decision": "once"}
-
-        # approval path: 设备在线走设备审批，离线根据风险分级处理
-        sess.approval_queue.append(tool_use_id)
-        sess.approval_in_progress = True
-        sess.decision_event.clear()
-        sess.decision_value = None
-        sess.pending_resend_count = 0  # 新审批入队，重置重发计数
-
-        # stub 模式视为设备在线（用于测试），--offline 强制覆盖
-        # 用 connected() 而非 device_online()：BLE 已连接即可走设备审批，不依赖心跳时序
-        device_online = (_transport.connected() or _stub) and not _force_offline
-
-        # 设备离线 + 低/中风险 → 自动批准
-        if not device_online and risk_level in {"safe", "normal"}:
-            print(f"[approval] device offline, auto-approve {tool} (risk={risk_level})")
-            decision = "once"
-            if tool_use_id in sess.approval_queue:
-                sess.approval_queue.remove(tool_use_id)
-            sess.approval_in_progress = False
-            sess.last_activity_ts = time.time()
-            if tool_use_id in sess.tools:
-                sess.tools[tool_use_id]["status"] = "running"
-            _mark_dirty()
-            wire = _to_device_wire()
-            await _send(wire)
-            _last_pushed_wire = wire
-            _clear_dirty()
-            return {"decision": decision}
-
-        # 设备离线 + 高风险 → CLI 提示
-        if not device_online and risk_level == "critical":
-            print(f"\n{'='*60}")
-            print(f"[CRITICAL APPROVAL REQUIRED] Device offline")
-            print(f"  Tool: {tool}")
-            print(f"  Hint: {summary[:80]}")
-            print(f"{'='*60}")
-            try:
-                choice = input("Approve? (y=once / s=session / n=deny): ").strip().lower()
-                decision = {"y": "once", "s": "session", "n": "deny"}.get(choice, "deny")
-            except Exception:
-                decision = "deny"
-            if tool_use_id in sess.approval_queue:
-                sess.approval_queue.remove(tool_use_id)
-            sess.approval_in_progress = False
-            sess.last_activity_ts = time.time()
-            if decision == "once":
-                if tool_use_id in sess.tools:
-                    sess.tools[tool_use_id]["status"] = "running"
-            else:
-                if tool_use_id in sess.tools:
-                    del sess.tools[tool_use_id]
-                sess.completed_inferred_for_ts = sess.last_activity_ts
-            _mark_dirty()
-            wire = _to_device_wire()
-            await _send(wire)
-            _last_pushed_wire = wire
-            _clear_dirty()
-            return {"decision": decision}
-
-        # 设备在线 → 走原有审批流程
-        _initial_wire = _to_device_wire()
-        await _send(_initial_wire)
-        _last_pushed_wire = _initial_wire
-        _update_pending_send_ts()  # 启动重发限速计时
-
-        if _stub:
-            print("[approval] stub mode → auto-once")
-            decision = "once"
-        else:
-            try:
-                await asyncio.wait_for(sess.decision_event.wait(), timeout=APPROVAL_TIMEOUT_S)
-                decision = sess.decision_value or "deny"
-            except asyncio.TimeoutError:
-                print("[approval] timeout → deny")
-                decision = "deny"
-
-        if tool_use_id in sess.approval_queue:
-            sess.approval_queue.remove(tool_use_id)
-        sess.approval_in_progress = False
-        sess.last_activity_ts = time.time()
-
-        if decision == "once":
-            if tool_use_id in sess.tools:
-                sess.tools[tool_use_id]["status"] = "running"
-        else:
-            if tool_use_id in sess.tools:
-                del sess.tools[tool_use_id]
-            sess.completed_inferred_for_ts = sess.last_activity_ts
-
         _mark_dirty()
-        wire = _to_device_wire()
-        await _send(wire)
-        _last_pushed_wire = wire
-        _clear_dirty()
-        return {"decision": decision}
+        return {"decision": "once"}
 
     if kind == "tool_done":
         tool_use_id = event.get("tool_use_id", "")
@@ -524,13 +334,8 @@ async def _handle_client(reader, writer):
     try:
         data = await asyncio.wait_for(reader.read(MAX_ENVELOPE_BYTES), timeout=35)
         env = json.loads(data.decode())
-        kind = (env.get("event") or {}).get("kind")
-        is_approval = kind == "tool_start" and (env.get("event") or {}).get("needs_approval")
-        if is_approval:
+        async with _lock:
             resp = await _handle_envelope(env)
-        else:
-            async with _lock:
-                resp = await _handle_envelope(env)
     except Exception as e:
         resp = {"ok": True, "error": str(e)}
     writer.write(json.dumps(resp).encode())
@@ -551,7 +356,7 @@ async def main():
             await asyncio.gather(
                 server.serve_forever(),
                 _transport.start(
-                    on_recv=_on_transport_recv,
+                    on_recv=lambda msg: None,
                     on_connect=_on_transport_connect,
                     on_disconnect=_on_transport_disconnect,
                 ),

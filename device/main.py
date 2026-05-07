@@ -3,17 +3,13 @@ try:
 except ImportError:
     import asyncio
 
-import sys
 from transport import BleTransport
 from queue import Queue
 import protocol as p
 import state as st
 
 _transport = BleTransport()
-
-
 _msg_queue = None
-_approval_pending = False
 
 
 def _print_status(s):
@@ -22,9 +18,6 @@ def _print_status(s):
     print(f"  msg={s.msg!r} state={st.STATE_NAMES[state]} needs_approval={st.StateEvent.needs_approval(s)}")
     if s.error:
         print(f"  error={s.error!r}")
-    if st.StateEvent.needs_approval(s):
-        print(f"  !! tool={s.prompt.get('tool','?')}")
-        print(f"     hint={s.prompt.get('hint','')[:60]}")
 
 
 def _print_msg(msg):
@@ -34,51 +27,16 @@ def _print_msg(msg):
     if isinstance(msg, dict):
         print(f"[ack/cmd] {msg}")
         return
-    if _approval_pending:
-        return
     print(f"[MultiSessionMsg] {len(msg.sessions)} session(s):")
     for s in msg.sessions:
         _print_status(s)
 
 
-async def _async_input(prompt: str) -> str:
-    import select
-    _poll = select.poll()
-    _poll.register(sys.stdin, select.POLLIN)
-    while _poll.poll(0):
-        sys.stdin.read(1)
-    print(prompt, end="")
-    buf = ""
-    while True:
-        if _poll.poll(0):
-            c = sys.stdin.read(1)
-            if c in ("\r", "\n"):
-                if buf:
-                    return buf.strip()
-            elif c:
-                buf += c
-        await asyncio.sleep(0)
-
-
-async def _handle_approval(session_idx: int):
-    global _approval_pending
-    try:
-        choice = await _async_input("  Input y=approve / n=deny, then Enter: ")
-    except Exception:
-        choice = "n"
-    decision = "once" if choice == "y" else ("session" if choice == "s" else "deny")
-    reply = p.build_decision(session_idx, decision)
-    await _transport.send(reply)
-    print(f"  → sent decision='{decision}'")
-
-
 async def ble_recv_task():
-    global _approval_pending
     while True:
         print("[ble] waiting for PC connection...")
         await _transport.connect()
         print("[ble] connected")
-        _approval_pending = False
         while _transport.connected():
             line = await _transport.recv_line()
             _msg_queue.put_nowait(p.parse(line))
@@ -86,34 +44,9 @@ async def ble_recv_task():
 
 
 async def render_task():
-    global _approval_pending
     while True:
         msg = await _msg_queue.get()
-
-        if isinstance(msg, dict) and msg.get("cmd") == "ping":
-            await _transport.send(p.build_ack("pong", ok=True))
-            continue
-
         _print_msg(msg)
-
-        if _approval_pending:
-            has_pending = False
-            if isinstance(msg, p.MultiSessionMsg):
-                has_pending = any(st.StateEvent.needs_approval(s) for s in msg.sessions)
-            if has_pending:
-                continue
-            _approval_pending = False
-            _print_msg(msg)  # 补打印被静默的消息
-
-        if isinstance(msg, p.MultiSessionMsg):
-            for i, s in enumerate(msg.sessions):
-                if st.StateEvent.needs_approval(s):
-                    _approval_pending = True
-                    asyncio.create_task(_handle_approval(i))
-                    break
-        elif isinstance(msg, p.StatusMsg) and st.StateEvent.needs_approval(msg):
-            _approval_pending = True
-            asyncio.create_task(_handle_approval(0))
 
 
 async def _main():
