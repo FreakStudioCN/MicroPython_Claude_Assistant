@@ -49,9 +49,15 @@ class BleTransport(Transport):
         return self._conn
 
     async def recv_line(self) -> str:
+        # 用 500ms 超时轮询，确保断连后能及时检测到
         chunks = 0
         while True:
-            conn, data = await _rx.written(timeout_ms=None)
+            try:
+                conn, data = await _rx.written(timeout_ms=500)
+            except Exception:
+                if not self.connected():
+                    raise OSError("BLE disconnected")
+                continue
             self._buf += data
             chunks += 1
             if b"\n" in self._buf:

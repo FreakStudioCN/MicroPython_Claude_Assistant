@@ -581,6 +581,155 @@ SUBAGENT_SEQUENCE = [
     ("Notification", "Notification.json", {"session_id": "subagent_test"}),
 ]
 
+# ── GUI 主界面状态转换序列 ────────────────────────────────
+# 验证脸部颜色（I=灰/W=蓝/E=红/C=绿）、眼睛眨眼（W时启动）、圆点颜色、选项卡闪烁
+GUI_FACE_TRANSITIONS_SEQUENCE = [
+    # 阶段1: 开始工作 → 脸蓝色、眼睛眨眼、S1圆点蓝色
+    ("S1: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_face_s1", "prompt": "Analyze code"
+    }),
+    ("S1: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "gui_face_s1", "tool_name": "Bash",
+        "tool_use_id": "toolu_GF_B1", "tool_input": {"command": "pytest --tb=short"}
+    }),
+    # [期望] 脸=蓝, 眼睛眨眼, S1圆点=蓝, 消息块=蓝 "Bash: ..."
+    # 阶段2: 完成 → 脸绿色、眼睛停止、消息块绿色
+    ("S1: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "gui_face_s1", "tool_name": "Bash",
+        "tool_use_id": "toolu_GF_B1", "tool_response": {"interrupted": False}
+    }),
+    ("S1: PostToolBatch", "PostToolBatch.json", {"session_id": "gui_face_s1"}),
+    # [期望] 脸=绿, 眼睛静止, S1圆点=绿, 消息块=绿 "Done"
+    # 阶段3: 第二轮工作 → 再次蓝色
+    ("S1: Turn2-UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_face_s1", "prompt": "Fix the bug"
+    }),
+    ("S1: PreToolUse(Edit)", "PreToolUse.json", {
+        "session_id": "gui_face_s1", "tool_name": "Edit",
+        "tool_use_id": "toolu_GF_E1", "tool_input": {"file_path": "main.py"}
+    }),
+    # [期望] 脸=蓝, 眼睛眨眼, 消息块=蓝 "Edit: ..."
+    # 阶段4: 工具失败 → 脸红色、选项卡闪烁
+    ("S1: PostToolUseFailure", "PostToolUseFailure.json", {
+        "session_id": "gui_face_s1", "tool_name": "Edit",
+        "tool_use_id": "toolu_GF_E1", "error": "File not found"
+    }),
+    # [期望] 脸=红, 眼睛静止, S1圆点=红, 消息块=红 "Error", S1选项卡闪烁
+    # 阶段5: StopFailure → 脸灰色
+    ("S1: StopFailure", "StopFailure.json", {"session_id": "gui_face_s1"}),
+    # [期望] 脸=灰, 消息块="Idle"
+]
+
+# ── GUI 五 Session 同时活跃序列 ──────────────────────────
+# 验证5个圆点同时显示不同颜色：S1=蓝/S2=红/S3=绿/S4=蓝/S5=灰
+GUI_5SESSIONS_SEQUENCE = [
+    # 依次启动 5 个 session
+    ("S1: Start", "UserPromptSubmit.json", {"session_id": "gui_5s_1", "prompt": "Task 1"}),
+    ("S2: Start", "UserPromptSubmit.json", {"session_id": "gui_5s_2", "prompt": "Task 2"}),
+    ("S3: Start", "UserPromptSubmit.json", {"session_id": "gui_5s_3", "prompt": "Task 3"}),
+    ("S4: Start", "UserPromptSubmit.json", {"session_id": "gui_5s_4", "prompt": "Task 4"}),
+    ("S5: Start", "UserPromptSubmit.json", {"session_id": "gui_5s_5", "prompt": "Task 5"}),
+    # S1: 工作中（蓝色圆点）
+    ("S1: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "gui_5s_1", "tool_name": "Read",
+        "tool_use_id": "toolu_5S_R1", "tool_input": {"file_path": "a.py"}
+    }),
+    # S2: 失败（红色圆点、选项卡闪烁）
+    ("S2: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "gui_5s_2", "tool_name": "Bash",
+        "tool_use_id": "toolu_5S_B1", "tool_input": {"command": "bad_cmd"}
+    }),
+    ("S2: PostToolUseFailure", "PostToolUseFailure.json", {
+        "session_id": "gui_5s_2", "tool_name": "Bash",
+        "tool_use_id": "toolu_5S_B1", "error": "Command not found"
+    }),
+    # S3: 完成（绿色圆点）
+    ("S3: PreToolUse(Grep)", "PreToolUse.json", {
+        "session_id": "gui_5s_3", "tool_name": "Grep",
+        "tool_use_id": "toolu_5S_G1", "tool_input": {"pattern": "TODO"}
+    }),
+    ("S3: PostToolUse(Grep)", "PostToolUse.json", {
+        "session_id": "gui_5s_3", "tool_name": "Grep",
+        "tool_use_id": "toolu_5S_G1", "tool_response": {"interrupted": False}
+    }),
+    ("S3: PostToolBatch", "PostToolBatch.json", {"session_id": "gui_5s_3"}),
+    # S4: 工作中（蓝色圆点）
+    ("S4: PreToolUse(WebSearch)", "PreToolUse.json", {
+        "session_id": "gui_5s_4", "tool_name": "WebSearch",
+        "tool_use_id": "toolu_5S_WS1", "tool_input": {"query": "MicroPython LVGL"}
+    }),
+    # S5: 空闲（灰色圆点，无工具调用）
+    # [期望] 5圆点: 蓝/红/绿/蓝/灰, 脸=红（E优先）, 消息块=红 S2错误
+    # 清理：恢复 S1、S4
+    ("S1: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "gui_5s_1", "tool_name": "Read",
+        "tool_use_id": "toolu_5S_R1", "tool_response": {"interrupted": False}
+    }),
+    ("S4: PostToolUse(WebSearch)", "PostToolUse.json", {
+        "session_id": "gui_5s_4", "tool_name": "WebSearch",
+        "tool_use_id": "toolu_5S_WS1", "tool_response": {"interrupted": False}
+    }),
+]
+
+# ── GUI 消息块优先级切换序列 ──────────────────────────────
+# 验证主界面消息块 E > W > C > I 的动态切换
+GUI_PRIORITY_SEQUENCE = [
+    # 建立初始状态：S1=W, S2=C, S3=E → 脸红色，消息块显示 S3
+    ("S1: Start+Work", "UserPromptSubmit.json", {
+        "session_id": "gui_prio_s1", "prompt": "Ongoing task"
+    }),
+    ("S1: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "gui_prio_s1", "tool_name": "Bash",
+        "tool_use_id": "toolu_PR_B1", "tool_input": {"command": "long_job.sh"}
+    }),
+    ("S2: Start+Done", "UserPromptSubmit.json", {
+        "session_id": "gui_prio_s2", "prompt": "Finished task"
+    }),
+    ("S2: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "gui_prio_s2", "tool_name": "Read",
+        "tool_use_id": "toolu_PR_R1", "tool_input": {"file_path": "done.py"}
+    }),
+    ("S2: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "gui_prio_s2", "tool_name": "Read",
+        "tool_use_id": "toolu_PR_R1", "tool_response": {"interrupted": False}
+    }),
+    ("S2: PostToolBatch", "PostToolBatch.json", {"session_id": "gui_prio_s2"}),
+    ("S3: Start+Error", "UserPromptSubmit.json", {
+        "session_id": "gui_prio_s3", "prompt": "Failed task"
+    }),
+    ("S3: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "gui_prio_s3", "tool_name": "Bash",
+        "tool_use_id": "toolu_PR_B2", "tool_input": {"command": "fail.sh"}
+    }),
+    ("S3: PostToolUseFailure", "PostToolUseFailure.json", {
+        "session_id": "gui_prio_s3", "tool_name": "Bash",
+        "tool_use_id": "toolu_PR_B2", "error": "Script failed"
+    }),
+    # [期望] S1=W, S2=C, S3=E → 脸=红, 消息块=红 "S3: Error"
+    # 消除 S3 错误，S1/S3 均在工作
+    ("S3: Recover", "UserPromptSubmit.json", {
+        "session_id": "gui_prio_s3", "prompt": "Retry"
+    }),
+    ("S3: PreToolUse(Bash-retry)", "PreToolUse.json", {
+        "session_id": "gui_prio_s3", "tool_name": "Bash",
+        "tool_use_id": "toolu_PR_B3", "tool_input": {"command": "retry.sh"}
+    }),
+    # [期望] S1=W, S2=C, S3=W → 脸=蓝, 消息块=蓝 "S1: Bash:..."（第一个W）
+    # 解决 S1
+    ("S1: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "gui_prio_s1", "tool_name": "Bash",
+        "tool_use_id": "toolu_PR_B1", "tool_response": {"interrupted": False}
+    }),
+    # [期望] S1=C, S2=C, S3=W → 脸=蓝, 消息块=蓝 "S3: Bash:..."
+    # 解决 S3
+    ("S3: PostToolUse(Bash-retry)", "PostToolUse.json", {
+        "session_id": "gui_prio_s3", "tool_name": "Bash",
+        "tool_use_id": "toolu_PR_B3", "tool_response": {"interrupted": False}
+    }),
+    ("S3: PostToolBatch", "PostToolBatch.json", {"session_id": "gui_prio_s3"}),
+    # [期望] S1=C, S2=C, S3=C → 脸=绿, 消息块=绿 "S1: Done"
+]
+
 # ── 所有序列（--all 模式）────────────────────────────────
 ALL_SEQUENCES = [
     (BASIC_SEQUENCE,               "基本功能测试"),
@@ -593,8 +742,11 @@ ALL_SEQUENCES = [
     (SESSION_RESTART_SEQUENCE,     "多轮对话测试"),
     (MIXED_TOOLS_SEQUENCE,         "混合工具测试"),
     (MULTI_SESSION_ERROR_SEQUENCE, "多 Session 错误测试"),
-    (RAPID_FIRE_SEQUENCE,          "快速连续工具测试"),
-    (SUBAGENT_SEQUENCE,            "Subagent 嵌套测试"),
+    (RAPID_FIRE_SEQUENCE,              "快速连续工具测试"),
+    (SUBAGENT_SEQUENCE,                "Subagent 嵌套测试"),
+    (GUI_FACE_TRANSITIONS_SEQUENCE,    "GUI 脸部状态转换测试"),
+    (GUI_5SESSIONS_SEQUENCE,           "GUI 五 Session 并发测试"),
+    (GUI_PRIORITY_SEQUENCE,            "GUI 消息块优先级测试"),
 ]
 
 
@@ -761,7 +913,10 @@ def main():
     parser.add_argument("--multi-session-error", action="store_true", help="多 Session 错误测试")
     parser.add_argument("--rapid-fire", action="store_true", help="快速连续工具测试")
     parser.add_argument("--subagent", action="store_true", help="Subagent 嵌套测试")
-    parser.add_argument("--all", action="store_true", help="运行全部序列（约 5 分钟）")
+    parser.add_argument("--gui-face", action="store_true", help="GUI 脸部状态转换测试")
+    parser.add_argument("--gui-5sessions", action="store_true", help="GUI 五 Session 并发测试")
+    parser.add_argument("--gui-priority", action="store_true", help="GUI 消息块优先级测试")
+    parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
                         help="跳过序列结束后的 session 清除等待")
     args = parser.parse_args()
@@ -828,6 +983,12 @@ def main():
         sequence, test_name = RAPID_FIRE_SEQUENCE, "快速连续工具测试"
     elif args.subagent:
         sequence, test_name = SUBAGENT_SEQUENCE, "Subagent 嵌套测试"
+    elif args.gui_face:
+        sequence, test_name = GUI_FACE_TRANSITIONS_SEQUENCE, "GUI 脸部状态转换测试"
+    elif args.gui_5sessions:
+        sequence, test_name = GUI_5SESSIONS_SEQUENCE, "GUI 五 Session 并发测试"
+    elif args.gui_priority:
+        sequence, test_name = GUI_PRIORITY_SEQUENCE, "GUI 消息块优先级测试"
     else:
         sequence, test_name = BASIC_SEQUENCE, "基本功能测试"
 

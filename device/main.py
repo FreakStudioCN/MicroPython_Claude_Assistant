@@ -19,9 +19,12 @@ async def ble_recv_task():
         await _transport.connect()
         await _renderer.on_connect()
         print("[ble] connected")
-        while _transport.connected():
-            line = await _transport.recv_line()
-            _msg_queue.put_nowait(p.parse(line))
+        try:
+            while _transport.connected():
+                line = await _transport.recv_line()
+                _msg_queue.put_nowait(p.parse(line))
+        except OSError:
+            pass
         await _renderer.on_disconnect()
         print("[ble] disconnected")
 
