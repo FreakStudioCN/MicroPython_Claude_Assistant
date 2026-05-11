@@ -285,7 +285,9 @@ class DisplayRenderer:
             btn.add_event_cb(lambda e, idx=i: self._on_tab_click(idx), lv.EVENT.CLICKED, None)
             lbl = lv.label(btn)
             lbl.set_text(f"S{i+1}")
-            lbl.center()
+            lbl.set_long_mode(lv.label.LONG_MODE.SCROLL_CIRCULAR)
+            lbl.set_width(TAB_W - 8)
+            lbl.align(lv.ALIGN.CENTER, 0, 0)
             self._tab_btns.append(btn)
             self._tab_labels.append(lbl)
 
@@ -416,7 +418,7 @@ class DisplayRenderer:
 
         if active_sess:
             text = active_sess.msg if active_sess.msg else _STATE_LABELS[_sess_state(active_sess)]
-            self._msg_label.set_text(f"S{active_idx}: {text}")
+            self._msg_label.set_text(f"{active_sess.name}: {text}")
             self._msg_block.set_style_bg_color(_BLOCK_COLORS[_sess_state(active_sess)], lv.PART.MAIN)
         else:
             self._msg_label.set_text("Idle")
@@ -450,7 +452,8 @@ class DisplayRenderer:
         tool_text = self._short_tool(index, sess)
         color_map = {"E": _C_TAB_ERR, "W": _C_TAB_WORK, "C": _C_TAB_CELE}
         btn.set_style_bg_color(color_map.get(state, _C_TAB_IDLE), lv.PART.MAIN)
-        lbl.set_text(tool_text if state in ("E", "W", "C") else f"S{index+1}")
+        # 使用 sess.name 显示项目名，状态活跃时显示工具名
+        lbl.set_text(tool_text if state in ("E", "W", "C") else sess.name)
         if state == "E":
             self._start_blink(index)
         else:

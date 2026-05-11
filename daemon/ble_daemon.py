@@ -34,6 +34,7 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from typing import Optional
@@ -64,6 +65,8 @@ class _Session:
         self.tools: dict = {}       # tool_use_id → {tool, category, summary, status, ts}
         self.has_subagent: bool = False
         self.waiting: int = 0
+        self.cwd: str = ""
+        self.display_name: str = ""
         self.current_error: str = ""
         self.current_interrupted: bool = False
         self.last_activity_ts: float = 0.0
@@ -138,18 +141,26 @@ def _build_msg(sess: _Session) -> str:
 
 def _session_to_wire(sid: str, sess: _Session) -> dict:
     now = time.time()
+    result = {"n": sess.display_name or "?"}
+
     if sess.dizzy_until > now:
-        return {"s": "E"}
+        result["s"] = "E"
+        return result
     if sess.completed_until > now:
-        return {"s": "C"}
+        result["s"] = "C"
+        return result
     if sess.waiting > 0:
-        return {"s": "P"}
+        result["s"] = "P"
+        return result
     for t in sess.tools.values():
         if t["status"] == "running":
             summary = t.get("summary", "")[:10]
             m = f"{t['tool']}: {summary}" if summary else t["tool"]
-            return {"s": "W", "m": m[:15]}
-    return {"s": "I"}
+            result["s"] = "W"
+            result["m"] = m[:15]
+            return result
+    result["s"] = "I"
+    return result
 
 
 def _to_device_wire() -> dict:
@@ -162,6 +173,24 @@ def _to_device_wire() -> dict:
         if has_tools or recently or special:
             active.append(_session_to_wire(sid, sess))
     return {"ss": active}
+
+
+def _generate_display_name(session_id: str, cwd: str) -> str:
+    """生成 session 显示名称：basename 或 basename+sid后4位（冲突时）。"""
+    basename = os.path.basename(cwd) if cwd else "unknown"
+    basename = basename[:12]  # 截断到12字符
+
+    # 检查是否已有同 basename 的 session
+    conflict = any(
+        s.display_name.startswith(basename) and s.cwd != cwd
+        for s in _sessions.values()
+        if s.display_name
+    )
+
+    if conflict:
+        suffix = session_id[-4:] if len(session_id) >= 4 else session_id
+        return f"{basename[:8]}-{suffix}"
+    return basename
 
 
 def _mark_dirty():
@@ -245,6 +274,14 @@ async def _handle_envelope(env: dict) -> dict:
     """根据 event.kind 改对应 session 的状态。返回给 hook_bridge 的 dict。"""
     session_id = env.get("generic", {}).get("session_id", "") or "default"
     sess = _sessions.setdefault(session_id, _Session())
+
+    # 提取 cwd 并生成 display_name（首次）
+    if not sess.display_name:
+        cwd = env.get("generic", {}).get("cwd", "")
+        if cwd:
+            sess.cwd = cwd
+            sess.display_name = _generate_display_name(session_id, cwd)
+            print(f"[session] {session_id!r} → display_name={sess.display_name!r}")
 
     event = env.get("event") or {}
     kind = event.get("kind", "")

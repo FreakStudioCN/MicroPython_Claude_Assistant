@@ -43,6 +43,7 @@ class SessionStatus:
     """v4 wire 中单个 session 的状态（从 s 字段推导所有属性）。"""
     def __init__(self, d: dict):
         s = d.get("s", "I")
+        self.name        = d.get("n", "?")
         self.running     = 1 if s == "W" else 0
         self.waiting     = 1 if s == "P" else 0
         self.completed   = s == "C"

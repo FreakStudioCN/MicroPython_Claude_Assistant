@@ -69,12 +69,14 @@ MULTI_SESSION_SEQUENCE = [
     # Session 1: 用户提交 prompt
     ("S1: UserPromptSubmit", "UserPromptSubmit.json", {
         "session_id": "session_1",
+        "cwd": "C:\\Users\\user\\Projects\\MyProject",
         "prompt": "Read main.py"
     }),
 
     # Session 1: 开始读取文件
     ("S1: PreToolUse(Read)", "PreToolUse.json", {
         "session_id": "session_1",
+        "cwd": "C:\\Users\\user\\Projects\\MyProject",
         "tool_name": "Read",
         "tool_use_id": "toolu_S1_READ1",
         "tool_input": {"file_path": "main.py"}
@@ -83,12 +85,14 @@ MULTI_SESSION_SEQUENCE = [
     # Session 2: 同时启动（并发场景）
     ("S2: UserPromptSubmit", "UserPromptSubmit.json", {
         "session_id": "session_2",
+        "cwd": "C:\\Users\\user\\Projects\\WebApp",
         "prompt": "Run tests"
     }),
 
     # Session 2: 开始执行命令
     ("S2: PreToolUse(Bash)", "PreToolUse.json", {
         "session_id": "session_2",
+        "cwd": "C:\\Users\\user\\Projects\\WebApp",
         "tool_name": "Bash",
         "tool_use_id": "toolu_S2_BASH1",
         "tool_input": {"command": "pytest"}
@@ -97,12 +101,14 @@ MULTI_SESSION_SEQUENCE = [
     # Session 3: 第三个实例
     ("S3: UserPromptSubmit", "UserPromptSubmit.json", {
         "session_id": "session_3",
+        "cwd": "C:\\Users\\user\\Projects\\DataPipeline",
         "prompt": "Search for TODO"
     }),
 
     # Session 3: 搜索
     ("S3: PreToolUse(Grep)", "PreToolUse.json", {
         "session_id": "session_3",
+        "cwd": "C:\\Users\\user\\Projects\\DataPipeline",
         "tool_name": "Grep",
         "tool_use_id": "toolu_S3_GREP1",
         "tool_input": {"pattern": "TODO"}
@@ -111,6 +117,7 @@ MULTI_SESSION_SEQUENCE = [
     # Session 1: 完成
     ("S1: PostToolUse(Read)", "PostToolUse.json", {
         "session_id": "session_1",
+        "cwd": "C:\\Users\\user\\Projects\\MyProject",
         "tool_name": "Read",
         "tool_use_id": "toolu_S1_READ1",
         "tool_response": {"interrupted": False}
@@ -119,6 +126,7 @@ MULTI_SESSION_SEQUENCE = [
     # Session 2: 完成
     ("S2: PostToolUse(Bash)", "PostToolUse.json", {
         "session_id": "session_2",
+        "cwd": "C:\\Users\\user\\Projects\\WebApp",
         "tool_name": "Bash",
         "tool_use_id": "toolu_S2_BASH1",
         "tool_response": {"interrupted": False}
@@ -127,6 +135,7 @@ MULTI_SESSION_SEQUENCE = [
     # Session 3: 完成
     ("S3: PostToolUse(Grep)", "PostToolUse.json", {
         "session_id": "session_3",
+        "cwd": "C:\\Users\\user\\Projects\\DataPipeline",
         "tool_name": "Grep",
         "tool_use_id": "toolu_S3_GREP1",
         "tool_response": {"interrupted": False}

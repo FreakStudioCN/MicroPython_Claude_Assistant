@@ -455,6 +455,58 @@ async def test_tool_error_decrements_waiting():
     print("  ok  tool_error decrements waiting")
 
 
+async def test_display_name_from_cwd():
+    """验证从 cwd 生成 display_name 并包含在 wire 的 n 字段中。"""
+    _reset()
+    last = None
+
+    # 发送带 cwd 的 envelope
+    env = _env_pre("Read", tool_use_id="t1", category="read")
+    env["generic"]["cwd"] = "/home/user/projects/MyAwesomeProject"
+    await d._handle_envelope(env)
+
+    # 验证 session 的 display_name
+    sess = _sess()
+    _assert(sess.display_name == "MyAwesomePro",
+            f"display_name should be 'MyAwesomePro', got {sess.display_name!r}")
+
+    # 验证 wire 包含 n 字段
+    last = await d._pusher_tick(last)
+    ws = _wire_sess()
+    _assert("n" in ws, "wire should contain 'n' field")
+    _assert(ws["n"] == "MyAwesomePro",
+            f"wire n should be 'MyAwesomePro', got {ws.get('n')!r}")
+    print("  ok  display_name from cwd → wire n field")
+
+
+async def test_display_name_conflict():
+    """验证同 basename 不同 cwd 时加后缀区分。"""
+    _reset()
+
+    # Session 1: /home/user/project1/MyProject
+    env1 = _env_pre("Read", tool_use_id="t1")
+    env1["generic"]["session_id"] = "sess_abc123"
+    env1["generic"]["cwd"] = "/home/user/project1/MyProject"
+    await d._handle_envelope(env1)
+
+    sess1 = d._sessions.get("sess_abc123")
+    _assert(sess1.display_name == "MyProject",
+            f"first session should be 'MyProject', got {sess1.display_name!r}")
+
+    # Session 2: /home/user/project2/MyProject (同 basename)
+    env2 = _env_pre("Read", tool_use_id="t2")
+    env2["generic"]["session_id"] = "sess_xyz789"
+    env2["generic"]["cwd"] = "/home/user/project2/MyProject"
+    await d._handle_envelope(env2)
+
+    sess2 = d._sessions.get("sess_xyz789")
+    _assert(sess2.display_name.startswith("MyProjec-"),
+            f"second session should have suffix, got {sess2.display_name!r}")
+    _assert("789" in sess2.display_name,
+            f"suffix should contain session_id tail, got {sess2.display_name!r}")
+    print("  ok  display_name conflict detection + suffix")
+
+
 async def main():
     # 替换 time + _send 全程 mock
     orig_time = d.time
@@ -479,6 +531,8 @@ async def main():
         test_waiting_pending_wire,
         test_tool_done_decrements_waiting,
         test_tool_error_decrements_waiting,
+        test_display_name_from_cwd,
+        test_display_name_conflict,
     ]
     print(f"running {len(tests)} daemon state tests (v3 per-session)...")
     try:
