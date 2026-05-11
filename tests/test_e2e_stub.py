@@ -90,17 +90,11 @@ def _fmt_msg(msg) -> str:
         parts = []
         for s in msg.sessions:
             parts.append(
-                f"Session(id={s.id!r} running={s.running}, waiting={s.waiting}, "
+                f"Session(running={s.running}, waiting={s.waiting}, "
                 f"completed={s.completed}, msg={s.msg!r}, "
-                f"category={s.category!r}, error={s.error!r}, "
-                f"interrupted={s.interrupted})"
+                f"error={s.error!r})"
             )
         return " | ".join(parts) if parts else "MultiSessionMsg(empty)"
-    if isinstance(msg, p.StatusMsg):
-        return (f"StatusMsg(running={msg.running}, waiting={msg.waiting}, "
-                f"completed={msg.completed}, msg={msg.msg!r}, "
-                f"category={msg.category!r}, error={msg.error!r}, "
-                f"interrupted={msg.interrupted})")
     if isinstance(msg, dict):
         return f"cmd dict: {msg}"
     return "parse→None"

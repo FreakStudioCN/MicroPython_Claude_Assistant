@@ -63,6 +63,7 @@ class _Session:
     def __init__(self):
         self.tools: dict = {}       # tool_use_id → {tool, category, summary, status, ts}
         self.has_subagent: bool = False
+        self.waiting: int = 0
         self.current_error: str = ""
         self.current_interrupted: bool = False
         self.last_activity_ts: float = 0.0
@@ -141,6 +142,8 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
         return {"s": "E"}
     if sess.completed_until > now:
         return {"s": "C"}
+    if sess.waiting > 0:
+        return {"s": "P"}
     for t in sess.tools.values():
         if t["status"] == "running":
             summary = t.get("summary", "")[:10]
@@ -259,6 +262,7 @@ async def _handle_envelope(env: dict) -> dict:
             print(f"[warn] tool_start missing tool_use_id, ignoring")
             return {"decision": "once"}
 
+        needs_approval = event.get("needs_approval", False)
         sess.tools[tool_use_id] = {
             "tool": tool,
             "category": category,
@@ -266,6 +270,9 @@ async def _handle_envelope(env: dict) -> dict:
             "status": "running",
             "ts": now,
         }
+        if needs_approval:
+            sess.waiting += 1
+            print(f"[approval] session={session_id!r} waiting={sess.waiting}")
         sess.last_activity_ts = now
         _mark_dirty()
         return {"decision": "once"}
@@ -276,6 +283,10 @@ async def _handle_envelope(env: dict) -> dict:
 
         if tool_use_id in sess.tools:
             del sess.tools[tool_use_id]
+
+        if sess.waiting > 0:
+            sess.waiting -= 1
+            print(f"[approval] session={session_id!r} done, waiting={sess.waiting}")
 
         sess.last_activity_ts = now
 
@@ -293,6 +304,10 @@ async def _handle_envelope(env: dict) -> dict:
 
         if tool_use_id in sess.tools:
             del sess.tools[tool_use_id]
+
+        if sess.waiting > 0:
+            sess.waiting -= 1
+            print(f"[approval] session={session_id!r} error, waiting={sess.waiting}")
 
         _enter_error_state(sess, now, hard_reset=False, error_msg=error_msg, is_interrupt=is_interrupt)
         return {"ok": True}

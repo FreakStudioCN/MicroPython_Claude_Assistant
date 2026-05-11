@@ -34,6 +34,7 @@ _C_BG_NORMAL  = lv.color_hex(0x2196F3)
 _C_BG_ERROR   = lv.color_hex(0xF44336)
 _C_BG_SUCCESS = lv.color_hex(0x4CAF50)
 _C_BG_IDLE    = lv.color_hex(0x9E9E9E)
+_C_BG_PENDING = lv.color_hex(0xFFC107)
 _C_TEXT_WHITE = lv.color_hex(0xFFFFFF)
 
 _C_FACE_IDLE  = lv.color_hex(0xBDBDBD)
@@ -45,6 +46,7 @@ _C_DOT_IDLE   = lv.color_hex(0xCCCCCC)
 _C_DOT_WORK   = lv.color_hex(0x2196F3)
 _C_DOT_ERR    = lv.color_hex(0xF44336)
 _C_DOT_DONE   = lv.color_hex(0x4CAF50)
+_C_DOT_PEND   = lv.color_hex(0xFFC107)
 
 _C_BLE_ON     = lv.color_hex(0x4CAF50)
 _C_BLE_OFF    = lv.color_hex(0xF44336)
@@ -64,15 +66,17 @@ EYE_SIZE     = const(10)
 DOT_SIZE     = const(18)
 
 # 状态颜色查找表
-_DOT_COLORS   = {"W": _C_DOT_WORK,  "E": _C_DOT_ERR,  "C": _C_DOT_DONE,  "I": _C_DOT_IDLE}
-_BLOCK_COLORS = {"W": _C_BG_NORMAL, "E": _C_BG_ERROR, "C": _C_BG_SUCCESS, "I": _C_BG_IDLE}
-_STATE_LABELS = {"W": "Working", "E": "Error", "C": "Done", "I": "Idle"}
+_DOT_COLORS   = {"W": _C_DOT_WORK,  "E": _C_DOT_ERR,  "C": _C_DOT_DONE,  "I": _C_DOT_IDLE,  "P": _C_DOT_PEND}
+_BLOCK_COLORS = {"W": _C_BG_NORMAL, "E": _C_BG_ERROR, "C": _C_BG_SUCCESS, "I": _C_BG_IDLE, "P": _C_BG_PENDING}
+_STATE_LABELS = {"W": "Working", "E": "Error", "C": "Done", "I": "Idle", "P": "Pending"}
 
 def _sess_state(sess) -> str:
     if sess.error:
         return "E"
     if sess.completed:
         return "C"
+    if sess.waiting:
+        return "P"
     if sess.running:
         return "W"
     return "I"

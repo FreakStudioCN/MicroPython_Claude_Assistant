@@ -423,6 +423,38 @@ async def test_multi_session_isolation():
     print("  ok  multi-session isolation: 两个 session 状态互不干扰")
 
 
+async def test_waiting_pending_wire():
+    """needs_approval=True → waiting=1 → wire 返回 'P'。"""
+    _reset()
+    last = None
+    await d._handle_envelope(_env_pre("Bash", needs_approval=True, tool_use_id="t1"))
+    _assert(_sess().waiting == 1, f"waiting should be 1, got {_sess().waiting}")
+    last = await d._pusher_tick(last)
+    _assert(_wire_sess()["s"] == "P", f"wire s should be P, got {_wire_sess().get('s')}")
+    print("  ok  needs_approval=True → waiting=1, wire s='P'")
+
+
+async def test_tool_done_decrements_waiting():
+    """tool_done 时 waiting 递减，wire 恢复 'I'。"""
+    _reset()
+    last = None
+    await d._handle_envelope(_env_pre("Bash", needs_approval=True, tool_use_id="t1"))
+    await d._handle_envelope(_env_post("Bash", tool_use_id="t1"))
+    _assert(_sess().waiting == 0, f"waiting should be 0 after tool_done, got {_sess().waiting}")
+    last = await d._pusher_tick(last)
+    _assert(_wire_sess()["s"] == "I", f"wire s should be I, got {_wire_sess().get('s')}")
+    print("  ok  tool_done decrements waiting → wire s='I'")
+
+
+async def test_tool_error_decrements_waiting():
+    """tool_error 时 waiting 递减。"""
+    _reset()
+    await d._handle_envelope(_env_pre("Bash", needs_approval=True, tool_use_id="t1"))
+    await d._handle_envelope(_env_post_fail("Bash", tool_use_id="t1"))
+    _assert(_sess().waiting == 0, f"waiting should be 0 after tool_error, got {_sess().waiting}")
+    print("  ok  tool_error decrements waiting")
+
+
 async def main():
     # 替换 time + _send 全程 mock
     orig_time = d.time
@@ -444,6 +476,9 @@ async def main():
         test_tool_done_interrupted_propagates,
         test_user_prompt_clears_error,
         test_multi_session_isolation,
+        test_waiting_pending_wire,
+        test_tool_done_decrements_waiting,
+        test_tool_error_decrements_waiting,
     ]
     print(f"running {len(tests)} daemon state tests (v3 per-session)...")
     try:

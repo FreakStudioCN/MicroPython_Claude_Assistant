@@ -88,25 +88,20 @@ async def test_tool_start_immediate_return():
     print("  ok  tool_start 立即返回 once（无审批等待）")
 
 
-async def test_wire_no_pending():
-    """验证 wire 不再包含 PENDING 状态"""
+async def test_wire_pending_on_approval():
+    """验证 needs_approval=True 时 wire 包含 PENDING 状态"""
     _reset()
     d._send = _capture_send
 
-    env = _env_tool_start("Read", "test.py", "t1")
+    env = _env_tool_start("Bash", "rm -rf /", "t1")
+    env["event"]["needs_approval"] = True
     await d._handle_envelope(env)
 
     wire = d._to_device_wire()
     sessions = wire.get("ss", [])
     assert len(sessions) > 0, "should have sessions"
-
-    # 检查所有 session 状态
-    for s in sessions:
-        state = s.get("s")
-        assert state != "P", f"should not have PENDING state, got {state}"
-        assert state in ["I", "W", "E", "C"], f"invalid state: {state}"
-
-    print("  ok  wire 不包含 PENDING 状态")
+    assert sessions[0].get("s") == "P", f"should be PENDING, got {sessions[0].get('s')}"
+    print("  ok  needs_approval=True → wire 包含 PENDING 状态")
 
 
 async def test_basic_workflow():
@@ -150,7 +145,7 @@ async def main():
         test_no_approval_constants,
         test_no_approval_fields,
         test_tool_start_immediate_return,
-        test_wire_no_pending,
+        test_wire_pending_on_approval,
         test_basic_workflow,
     ]
 

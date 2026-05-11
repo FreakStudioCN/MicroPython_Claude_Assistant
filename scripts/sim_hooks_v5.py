@@ -730,6 +730,94 @@ GUI_PRIORITY_SEQUENCE = [
     # [期望] S1=C, S2=C, S3=C → 脸=绿, 消息块=绿 "S1: Done"
 ]
 
+# ── 审批通知序列 ──────────────────────────────────────────
+# 验证 needs_approval=True 时设备显示 PENDING（黄色），审批完成后恢复
+# 注意：hook_bridge 立即返回 {}，审批由 Claude Code 终端完成
+#       设备端只做通知用，本序列验证 PENDING 状态的推送与恢复
+APPROVAL_SEQUENCE = [
+    # 阶段1: 普通工具（无审批）→ 设备显示 WORKING（蓝色）
+    ("UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "approval_test",
+        "prompt": "Delete temp files and push to remote"
+    }),
+    ("PreToolUse(Read-safe)", "PreToolUse.json", {
+        "session_id": "approval_test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_AP_R1",
+        "tool_input": {"file_path": "README.md"}
+    }),
+    # [期望] 设备: WORKING 蓝色，消息块 "Read: README.md"
+    ("PostToolUse(Read-safe)", "PostToolUse.json", {
+        "session_id": "approval_test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_AP_R1",
+        "tool_response": {"interrupted": False}
+    }),
+
+    # 阶段2: 需要审批的 Bash 命令 → 设备显示 PENDING（黄色）
+    ("PreToolUse(Bash-critical)", "PreToolUse_critical_bash.json", {
+        "session_id": "approval_test",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_AP_B1",
+        "tool_input": {"command": "rm -rf /tmp/build && git push --force"}
+    }),
+    # [期望] 设备: PENDING 黄色，提醒用户去终端审批
+    # 模拟用户在终端批准（PostToolUse 表示工具已执行完成）
+    ("PostToolUse(Bash-critical-approved)", "PostToolUse.json", {
+        "session_id": "approval_test",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_AP_B1",
+        "tool_response": {"interrupted": False}
+    }),
+    # [期望] 设备: 恢复 IDLE（灰色）
+
+    # 阶段3: 需要审批的 Write 操作 → 再次 PENDING
+    ("PreToolUse(Write-critical)", "PreToolUse_critical_write.json", {
+        "session_id": "approval_test",
+        "tool_name": "Write",
+        "tool_use_id": "toolu_AP_W1",
+        "tool_input": {"file_path": ".env"}
+    }),
+    # [期望] 设备: PENDING 黄色
+    # 模拟用户在终端拒绝（PostToolUseFailure 表示工具被拒绝/失败）
+    ("PostToolUseFailure(Write-denied)", "PostToolUseFailure.json", {
+        "session_id": "approval_test",
+        "tool_name": "Write",
+        "tool_use_id": "toolu_AP_W1",
+        "error": "User denied the operation"
+    }),
+    # [期望] 设备: ERROR 红色（工具失败），随后恢复 IDLE
+
+    # 阶段4: 多个审批工具并发 → PENDING 计数正确
+    ("PreToolUse(Bash-1)", "PreToolUse_critical_bash.json", {
+        "session_id": "approval_test",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_AP_B2",
+        "tool_input": {"command": "git push --force origin main"}
+    }),
+    ("PreToolUse(Edit-critical)", "PreToolUse_critical_edit.json", {
+        "session_id": "approval_test",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_AP_E1",
+        "tool_input": {"file_path": ".git/config"}
+    }),
+    # [期望] 设备: PENDING 黄色（waiting=2）
+    ("PostToolUse(Bash-1-done)", "PostToolUse.json", {
+        "session_id": "approval_test",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_AP_B2",
+        "tool_response": {"interrupted": False}
+    }),
+    # [期望] 设备: 仍然 PENDING（waiting=1，还有 Edit 未完成）
+    ("PostToolUse(Edit-done)", "PostToolUse.json", {
+        "session_id": "approval_test",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_AP_E1",
+        "tool_response": {"interrupted": False}
+    }),
+    # [期望] 设备: 恢复 IDLE（waiting=0）
+]
+
 # ── 所有序列（--all 模式）────────────────────────────────
 ALL_SEQUENCES = [
     (BASIC_SEQUENCE,               "基本功能测试"),
@@ -744,6 +832,7 @@ ALL_SEQUENCES = [
     (MULTI_SESSION_ERROR_SEQUENCE, "多 Session 错误测试"),
     (RAPID_FIRE_SEQUENCE,              "快速连续工具测试"),
     (SUBAGENT_SEQUENCE,                "Subagent 嵌套测试"),
+    (APPROVAL_SEQUENCE,                "审批通知测试"),
     (GUI_FACE_TRANSITIONS_SEQUENCE,    "GUI 脸部状态转换测试"),
     (GUI_5SESSIONS_SEQUENCE,           "GUI 五 Session 并发测试"),
     (GUI_PRIORITY_SEQUENCE,            "GUI 消息块优先级测试"),
@@ -916,6 +1005,7 @@ def main():
     parser.add_argument("--gui-face", action="store_true", help="GUI 脸部状态转换测试")
     parser.add_argument("--gui-5sessions", action="store_true", help="GUI 五 Session 并发测试")
     parser.add_argument("--gui-priority", action="store_true", help="GUI 消息块优先级测试")
+    parser.add_argument("--approval", action="store_true", help="审批通知测试（PENDING 状态）")
     parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
                         help="跳过序列结束后的 session 清除等待")
@@ -989,6 +1079,8 @@ def main():
         sequence, test_name = GUI_5SESSIONS_SEQUENCE, "GUI 五 Session 并发测试"
     elif args.gui_priority:
         sequence, test_name = GUI_PRIORITY_SEQUENCE, "GUI 消息块优先级测试"
+    elif args.approval:
+        sequence, test_name = APPROVAL_SEQUENCE, "审批通知测试"
     else:
         sequence, test_name = BASIC_SEQUENCE, "基本功能测试"
 
