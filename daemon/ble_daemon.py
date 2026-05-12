@@ -250,7 +250,11 @@ async def _pusher_tick(last_pushed_wire):
             if await _send(wire):
                 last_pushed_wire = wire
                 _last_pushed_wire = wire
-        _dirty = False
+                _dirty = False
+            else:
+                _dirty = True
+        else:
+            _dirty = False
     return last_pushed_wire
 
 
