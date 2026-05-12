@@ -22,8 +22,14 @@ CONNECT_TIMEOUT = 0.5
 RECV_TIMEOUT = 1.0
 
 
-def _push(envelope: dict) -> bool:
-    """同步推一条 envelope，等 daemon 回应。daemon 永远回 JSON dict。"""
+def _push(envelope: dict):
+    """同步推一条 envelope，等 daemon 回应。返回 daemon 回的 dict，失败返回 None。
+
+    §A-5: 之前只 bool 返回"daemon 是否回合法 JSON"。但 daemon 的异常 handler
+    （ble_daemon._handle_client）也会回合法 JSON `{"ok": True, "error": "..."}`，
+    smoke 看不出区别——装机决策树最后一步靠 smoke 兜底，宽松等于装机失败也"成功"。
+    改成返回 dict 让 main() 按 envelope 类型校验预期字段。
+    """
     try:
         with socket.create_connection((HOST, PORT), timeout=CONNECT_TIMEOUT) as s:
             s.settimeout(RECV_TIMEOUT)
@@ -36,12 +42,11 @@ def _push(envelope: dict) -> bool:
                     break
                 buf += chunk
             if not buf:
-                return False
-            json.loads(buf.decode("utf-8"))  # daemon 必须回合法 JSON
-            return True
+                return None
+            return json.loads(buf.decode("utf-8"))
     except Exception as e:
         print(f"[smoke] push failed: {e}", file=sys.stderr)
-        return False
+        return None
 
 
 def main() -> None:
@@ -90,15 +95,19 @@ def main() -> None:
         },
     }
 
-    if not _push(envelope_start):
-        print("[smoke] FAIL — daemon unreachable or rejected tool_start")
+    # §A-5: 校验 daemon 回的就是 _handle_envelope 的预期字段，
+    # 不是异常 handler 的 {"ok": True, "error": "..."} 兜底回包。
+    resp = _push(envelope_start)
+    if resp is None or "error" in resp or resp.get("decision") != "once":
+        print(f"[smoke] FAIL — tool_start unexpected response: {resp}")
         sys.exit(1)
     print("[smoke] tool_start accepted")
 
     time.sleep(0.5)
 
-    if not _push(envelope_done):
-        print("[smoke] FAIL — daemon rejected tool_done")
+    resp = _push(envelope_done)
+    if resp is None or "error" in resp or not resp.get("ok"):
+        print(f"[smoke] FAIL — tool_done unexpected response: {resp}")
         sys.exit(1)
     print("[smoke] tool_done accepted")
 

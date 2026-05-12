@@ -101,8 +101,8 @@ def _on_transport_disconnect():
     print("[daemon] disconnected, will reconnect...")
 
 
-async def _send(payload: dict):
-    """推送 wire JSON（stub 打印 / 走 transport）。
+async def _send(payload: dict) -> bool:
+    """推送 wire JSON（stub 打印 / 走 transport）。返回是否真送出去了。
 
     v2.2 §A-4: BLE 抖动 / 距离过远 / 设备断电时 ``_transport.send`` 会抛
     ``BleakError`` 或其它 ``Exception``。原代码不接，异常透出会让
@@ -111,18 +111,24 @@ async def _send(payload: dict):
 
     包 try/except：丢这条 payload，warning 后继续 loop，
     transport 自己的重连循环会把 BLE 重新拉回来。
+
+    §A-5: 返回 bool。失败 / 未连接时返回 False，让 ``_pusher_tick`` 不更新
+    ``last_pushed_wire``——否则 BLE 重连后状态相同会被 dedup 误吞，
+    彻底修复 §A-4 commit message 里那个"走出房间回来桌宠永远不动"场景。
     """
     if _stub:
         print(f"[stub-send] t={time.time():.3f} {json.dumps(payload, ensure_ascii=False)}")
-        return
+        return True
     if not _transport.connected():
         print(f"[send] skipped (not connected): {payload}")
-        return
+        return False
     try:
         await _transport.send(payload)
+        return True
     except Exception as e:
         # 丢一条 payload，不打断 pusher loop；transport._connect_loop 会重连
         print(f"[send] failed, dropped: {type(e).__name__}: {e}")
+        return False
 
 
 # ── per-session 状态翻译 ───────────────────────────────────
@@ -239,9 +245,11 @@ async def _pusher_tick(last_pushed_wire):
     if _dirty:
         wire = _to_device_wire()
         if wire != last_pushed_wire:
-            await _send(wire)
-            last_pushed_wire = wire
-            _last_pushed_wire = wire
+            # §A-5: 只在 _send 真送出去时才记 last_pushed_wire；失败时保持旧值，
+            # 下一 tick 即便 wire 没变也会再试（修 §A-4 残留：重连后状态相同被 dedup 误吞）
+            if await _send(wire):
+                last_pushed_wire = wire
+                _last_pushed_wire = wire
         _dirty = False
     return last_pushed_wire
 
