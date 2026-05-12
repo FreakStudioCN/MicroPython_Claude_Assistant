@@ -18,8 +18,11 @@
 # daemon 不可达时 fail-open (返回 {}),保证硬件离线不会拖死 Claude Code.
 
 import json
+import shutil
 import socket
+import subprocess
 import sys
+from pathlib import Path
 
 # 导入风险分级配置（package 模式优先，script 模式 fallback，都失败用内置默认）
 try:
@@ -47,9 +50,15 @@ except ImportError:
 
 HOST = "127.0.0.1"
 PORT = 57320
-CONNECT_TIMEOUT = 1.0     # localhost connect 应该 ms 级,1s 是 daemon 卡死的兜底
-RECV_TIMEOUT = 5          # v5: daemon 不再等待审批，5s 足够
+# v2.2 §A-2: 缩短 timeout, 让 daemon 死的时候不卡 CLI 秒级
+CONNECT_TIMEOUT = 0.3     # localhost connect 应该 ms 级
+RECV_TIMEOUT = 0.5        # daemon 立刻回 JSON，0.5s 远超正常
 MAX_STDIN_BYTES = 1 << 20  # 1MB hook payload 上限,防超大 tool_response 内存炸
+
+# v2.2 §A-2: daemon 装在用户本地 `~/.claude-buddy/`（独立于 plugin 生命周期）。
+# 用 `Path.home()` 运行时解析——不依赖 Claude Code 对 `${HOME}` 的展开行为
+# （后者不在官方保证列表里，github issue #46889）。
+DAEMON_ROOT = Path.home() / ".claude-buddy"
 # NotebookEdit 归 edit 类但不需审批：notebook 编辑操作危险性低于直接文件写入，
 # 且 notebook cell 输出可在 Claude Code UI 中直接查看，无需额外硬件确认。
 
@@ -284,9 +293,52 @@ NORMALIZERS = {
 }
 
 
+def _spawn_daemon_detached() -> None:
+    """启动 daemon detached（best effort，失败吞掉）。
+
+    v2.2 §A-2 lite 版：不做 negative cache，不 poll 等 daemon ready——
+    本次 hook 直接 fail-open，下一次 hook 时 daemon 已起来就能连上。
+
+    uv 解析顺序：PATH 上的 ``uv`` 优先；找不到则 ``<python> -m uv``。
+    Windows 上 ``pip install --user uv`` 把 uv 装到 ``%APPDATA%\\Python\\..\\Scripts``
+    通常不在 PATH——但同一 Python 的 site-packages 含 uv 模块，``-m uv`` 仍能跑。
+    """
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        cmd = [uv_bin, "run", "--project", str(DAEMON_ROOT), "claude-buddy-daemon"]
+    else:
+        cmd = [sys.executable, "-m", "uv", "run",
+               "--project", str(DAEMON_ROOT), "claude-buddy-daemon"]
+    try:
+        if sys.platform == "win32":
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+            )
+        else:
+            subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+    except Exception:
+        # 任何失败都吞掉——hook 永远不能阻塞 CLI
+        pass
+
+
 def _call_daemon(envelope: dict) -> dict:
     """同步 socket 调用。daemon 不可达 / 超时 / JSON 错都 fail-open 返回 {}。
-    v5: daemon 立即返回，无需长超时等待。"""
+    v5: daemon 立即返回，无需长超时等待。
+    v2.2 §A-2: 连不上时尝试 spawn daemon detached，本次 fail-open。"""
     try:
         with socket.create_connection((HOST, PORT), timeout=CONNECT_TIMEOUT) as s:
             s.settimeout(RECV_TIMEOUT)
@@ -301,6 +353,12 @@ def _call_daemon(envelope: dict) -> dict:
             if not buf:
                 return {}
             return json.loads(buf.decode("utf-8"))
+    except (ConnectionRefusedError, socket.timeout, OSError):
+        # daemon 不可达：直接尝试 spawn 拉起来，下次 hook 接力。
+        # 用户没装 daemon runtime（~/.claude-buddy/ 不存在）时 spawn 会失败，
+        # 静默吞掉——hook 永远不能阻塞 CLI。
+        _spawn_daemon_detached()
+        return {}
     except Exception:
         return {}
 
