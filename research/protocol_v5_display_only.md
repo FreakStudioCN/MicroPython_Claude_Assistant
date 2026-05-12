@@ -22,7 +22,7 @@
 ### 1.2 BLE 传输约束
 
 - **MTU 限制**: 20 字节/chunk（BLE NUS 标准）
-- **目标**: 单条消息 ≤ 60 字节（3 chunks）
+- **目标**: 常规消息 ≤ 60 字节（3 chunks），长消息 ≤ 100 字节（5 chunks）
 - **策略**: 字段名极简化 + 内容截断
 
 ### 1.3 显示需求
@@ -31,7 +31,7 @@
 **可显示内容**:
 - ASCII 角色动画（3-4 行，每行 10 字符）
 - 状态文字（1 行，16 字符）
-- 工具/命令提示（1 行，20 字符）
+- 工具/命令提示（1 行，60 字符，跑马灯滚动）
 - Session 指示器（多 session 时显示数量）
 
 ---
@@ -56,9 +56,9 @@
 |------|------|------|---------|------|
 | `ss` | array | Sessions 数组，包含所有活跃 session | - | ✓ |
 | `s` | str | 状态枚举（见下表） | 1 字符 | ✓ |
-| `m` | str | 消息文本（工具描述） | ≤20 字符 | 条件 |
+| `m` | str | 消息文本（工具描述） | ≤60 字符 | 条件 |
 | `t` | str | 工具名（仅展示用） | ≤8 字符 | 条件 |
-| `h` | str | 提示文本（命令/路径） | ≤20 字符 | 条件 |
+| `h` | str | 提示文本（命令/路径） | ≤60 字符 | 条件 |
 | `c` | str | 工具类别（可选，用于图标） | ≤4 字符 | 可选 |
 
 #### 状态枚举
@@ -111,13 +111,19 @@
 ```
 
 **大小**: 42 字节 → **3 chunks** ✅  
+**长消息示例**:
+```json
+{"ss": [{"s": "W", "m": "Bash: git log --oneline --graph --all --decorate --abbrev"}]}
+```
+**大小**: 82 字节 → **5 chunks** ✅  
+
 **设备显示**:
 ```
   /\_/\  
  ( >.< ) 
   > ^ <  
  [busy]
-Read: config.py
+Read: config.py  (跑马灯滚动)
 ```
 
 ---
@@ -236,14 +242,16 @@ Cmd failed
 |------|-------------|-------------|------|
 | Idle | 21B (2 chunks) | 21B (2 chunks) | 0% |
 | Working | 45B (3 chunks) | 42B (3 chunks) | -7% |
+| Working (长消息) | - | 82B (5 chunks) | 新增 |
 | Pending | 62B (4 chunks) | 54B (3 chunks) | **-13%** |
 | Error | 21B (2 chunks) | 36B (2 chunks) | +71% (但更有用) |
 | 多 session (3个) | ~120B (6 chunks) | 79B (4 chunks) | **-34%** |
 
 **关键优化**: 
 - Pending 状态不再需要 `id` 字段（无需审批路由）
-- 可以增加 `m` 字段长度（从 16 → 20 字符）
+- 可以增加 `m` 字段长度（从 16 → 60 字符）
 - 错误状态可以携带简短错误信息
+- 长消息支持完整命令显示（跑马灯滚动）
 
 ---
 
@@ -526,7 +534,7 @@ def parse(line: str):
 async def _handle_tool_start(event: dict):
     """处理工具启动事件"""
     tool = event.get("tool", "")
-    summary = event.get("summary", "")[:20]  # 截断到 20 字符
+    summary = event.get("summary", "")[:50]  # 截断到 50 字符（wire m 字段最终 60 字符）
     category = event.get("tool_category", "")[:4]
 
     # 构造状态消息

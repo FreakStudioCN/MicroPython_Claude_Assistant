@@ -3,11 +3,13 @@
 #
 # 输入: hook_bridge.py 通过 TCP 57320 推 v2 envelope
 #       {type:"event", v:2, event:{kind, ...}, generic:{session_id, ...}}
-# 输出: 翻译为 protocol.py v5 精简 wire（1-3 BLE chunks）
+# 输出: 翻译为 protocol.py v5 精简 wire（1-5 BLE chunks）
 #       {"ss":[{"s":"I"}]}                    → 1 chunk
 #       {"ss":[{"s":"W","m":"Bash"}]}         → 2 chunks
 #       {"ss":[{"s":"W","m":"Read: main.py"}]} → 3 chunks
+#       {"ss":[{"s":"W","m":"Bash: git log --oneline --graph --all --decorate --abbrev"}]} → 5 chunks
 #       状态码: I=IDLE W=WORKING E=ERROR C=CELEBRATE
+#       消息长度: m 字段最长 60 字符（设备端跑马灯滚动显示）
 #       通过 BLE NUS 写到 ESP32
 #
 # v5 变化: 删除设备审批，改为纯展示 + 终端审批

@@ -2,8 +2,8 @@
 display_renderer.py —— LVGL 屏幕渲染器
 
 三个面板：
-  主界面：顶部导航 + 小人动画 + session 圆点概要 + 当前状态消息块
-  Sessions：5 个选项卡 + Flex 彩色历史记录
+  主界面：顶部导航 + 小人动画 + session 圆点概要 + 当前状态消息块（60 字符跑马灯）
+  Sessions：5 个选项卡 + Flex 彩色历史记录（自动换行）
   Config：亮度调节
 """
 
