@@ -1,0 +1,13 @@
+{
+  "name": "claude-buddy",
+  "owner": {
+    "name": "FreakStudio"
+  },
+  "plugins": [
+    {
+      "name": "claude-buddy-bridge",
+      "source": "./",
+      "description": "Visualize Claude Code / Codex CLI tool calls on the Claude Buddy desktop pet hardware via BLE."
+    }
+  ]
+}

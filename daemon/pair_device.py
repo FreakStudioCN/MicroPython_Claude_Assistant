@@ -92,7 +92,7 @@ def prompt_selection(devices: list[tuple[str, str]]) -> tuple[str, str]:
             print("[错误] 请输入有效的数字")
 
 
-async def main():
+async def async_main():
     print("=" * 60)
     print("Claude-Buddy 设备配对工具")
     print("=" * 60)
@@ -136,9 +136,14 @@ async def main():
     print("\n下次运行 daemon 时将自动连接到此设备")
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """同步 entrypoint，给 `claude-buddy-pair` console_script 用。"""
     try:
-        asyncio.run(main())
+        asyncio.run(async_main())
     except KeyboardInterrupt:
         print("\n\n已取消")
         sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

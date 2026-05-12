@@ -38,7 +38,10 @@ import sys
 import time
 from typing import Optional
 
-from transport import BleTransport
+try:
+    from .transport import BleTransport
+except ImportError:  # 直接 `python daemon/ble_daemon.py` 跑时
+    from transport import BleTransport
 
 HOST = "127.0.0.1"
 PORT = 57320
@@ -343,7 +346,7 @@ async def _handle_client(reader, writer):
     writer.close()
 
 
-async def main():
+async def async_main():
     global _lock, _transport
     _lock = asyncio.Lock()
     _transport = BleTransport()
@@ -364,7 +367,15 @@ async def main():
             )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """同步 entrypoint，给 `claude-buddy-daemon` console_script 用。
+
+    console_scripts 入口必须是 sync callable；原 ``async def main()`` 改名为
+    ``async_main()``，由本函数 ``asyncio.run`` 包起来。直接 ``python daemon/ble_daemon.py``
+    跑也走这里。
+    """
+    global _stub, _force_offline
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--stub", action="store_true",
                         help="跳过 BLE 连接, _send 改 stdout 打印用于 e2e 测试")
@@ -376,10 +387,9 @@ if __name__ == "__main__":
     _stub = args.stub
     _force_offline = args.offline
 
-    # 设置日志：始终同时输出到终端和文件
-    import sys
+    import os
     import tempfile
-    log_path = args.log or __import__('os').path.join(tempfile.gettempdir(), "ble_daemon.log")
+    log_path = args.log or os.path.join(tempfile.gettempdir(), "ble_daemon.log")
 
     class TeeOutput:
         def __init__(self, file_path, original_stream):
@@ -400,7 +410,11 @@ if __name__ == "__main__":
     print(f"[daemon] 日志文件: {log_path}")
 
     try:
-        asyncio.run(main())
+        asyncio.run(async_main())
     except KeyboardInterrupt:
         print("\n[daemon] bye")
         sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

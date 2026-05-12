@@ -21,23 +21,29 @@ import json
 import socket
 import sys
 
-# 导入风险分级配置
+# 导入风险分级配置（package 模式优先，script 模式 fallback，都失败用内置默认）
 try:
-    from risk_config import (
+    from .risk_config import (
         CRITICAL_PATHS, CRITICAL_BASH_PATTERNS,
         SAFE_TOOLS, APPROVAL_TOOLS
     )
 except ImportError:
-    # 回退默认值（如果 risk_config.py 不存在）
-    CRITICAL_PATHS = {".git/config", ".git/hooks", ".env", "credentials.json",
-                      "id_rsa", "id_ed25519", ".ssh/", "/etc/", "C:\\Windows\\"}
-    CRITICAL_BASH_PATTERNS = [
-        "git branch -D", "git push --force", "git push -f", "git reset --hard",
-        "rm -rf", "rm -fr", "dd if=", "> /dev/", "mkfs", "fdisk", "format ",
-        "del /s", "rmdir /s"
-    ]
-    SAFE_TOOLS = {"Read", "Glob", "Grep", "WebFetch", "WebSearch"}
-    APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
+    try:
+        from risk_config import (
+            CRITICAL_PATHS, CRITICAL_BASH_PATTERNS,
+            SAFE_TOOLS, APPROVAL_TOOLS
+        )
+    except ImportError:
+        # 内置默认（risk_config.py 不存在时）
+        CRITICAL_PATHS = {".git/config", ".git/hooks", ".env", "credentials.json",
+                          "id_rsa", "id_ed25519", ".ssh/", "/etc/", "C:\\Windows\\"}
+        CRITICAL_BASH_PATTERNS = [
+            "git branch -D", "git push --force", "git push -f", "git reset --hard",
+            "rm -rf", "rm -fr", "dd if=", "> /dev/", "mkfs", "fdisk", "format ",
+            "del /s", "rmdir /s"
+        ]
+        SAFE_TOOLS = {"Read", "Glob", "Grep", "WebFetch", "WebSearch"}
+        APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
 
 HOST = "127.0.0.1"
 PORT = 57320
