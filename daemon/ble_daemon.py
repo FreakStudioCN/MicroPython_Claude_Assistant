@@ -102,14 +102,27 @@ def _on_transport_disconnect():
 
 
 async def _send(payload: dict):
-    """推送 wire JSON（stub 打印 / 走 transport）。"""
+    """推送 wire JSON（stub 打印 / 走 transport）。
+
+    v2.2 §A-4: BLE 抖动 / 距离过远 / 设备断电时 ``_transport.send`` 会抛
+    ``BleakError`` 或其它 ``Exception``。原代码不接，异常透出会让
+    ``_pusher_task`` 退出，再被 ``asyncio.gather`` 拉倒整个 daemon——
+    实际表现是用户走出房间几秒回来，桌宠永久不再更新。
+
+    包 try/except：丢这条 payload，warning 后继续 loop，
+    transport 自己的重连循环会把 BLE 重新拉回来。
+    """
     if _stub:
         print(f"[stub-send] t={time.time():.3f} {json.dumps(payload, ensure_ascii=False)}")
         return
     if not _transport.connected():
         print(f"[send] skipped (not connected): {payload}")
         return
-    await _transport.send(payload)
+    try:
+        await _transport.send(payload)
+    except Exception as e:
+        # 丢一条 payload，不打断 pusher loop；transport._connect_loop 会重连
+        print(f"[send] failed, dropped: {type(e).__name__}: {e}")
 
 
 # ── per-session 状态翻译 ───────────────────────────────────
