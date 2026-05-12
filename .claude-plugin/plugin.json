@@ -1,0 +1,5 @@
+{
+  "name": "claude-buddy-bridge",
+  "version": "0.1.0",
+  "description": "Claude Buddy hardware desktop pet — Claude Code / Codex CLI hooks bridge. Daemon runtime installed separately at ~/.claude-buddy/."
+}

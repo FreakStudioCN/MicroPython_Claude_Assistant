@@ -1,0 +1,21 @@
+[project]
+name = "claude-buddy"
+version = "0.1.0"
+description = "Claude Buddy desktop pet daemon + hook bridge for Claude Code / Codex CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "bleak>=0.21",
+]
+
+[project.scripts]
+claude-buddy-daemon = "daemon.ble_daemon:main"
+claude-buddy-hook-bridge = "daemon.hook_bridge:main"
+claude-buddy-smoke = "daemon.smoke:main"
+claude-buddy-pair = "daemon.pair_device:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["daemon"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

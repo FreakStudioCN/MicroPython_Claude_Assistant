@@ -50,6 +50,7 @@ _sent_wires = []
 
 async def _capture_send(payload):
     _sent_wires.append(dict(payload))
+    return True
 
 
 # ── per-session helpers ────────────────────────────────

@@ -41,7 +41,10 @@ import sys
 import time
 from typing import Optional
 
-from transport import BleTransport
+try:
+    from .transport import BleTransport
+except ImportError:  # 直接 `python daemon/ble_daemon.py` 跑时
+    from transport import BleTransport
 
 HOST = "127.0.0.1"
 PORT = 57320
@@ -104,15 +107,34 @@ def _on_transport_disconnect():
     print("[daemon] disconnected, will reconnect...")
 
 
-async def _send(payload: dict):
-    """推送 wire JSON（stub 打印 / 走 transport）。"""
+async def _send(payload: dict) -> bool:
+    """推送 wire JSON（stub 打印 / 走 transport）。返回是否真送出去了。
+
+    v2.2 §A-4: BLE 抖动 / 距离过远 / 设备断电时 ``_transport.send`` 会抛
+    ``BleakError`` 或其它 ``Exception``。原代码不接，异常透出会让
+    ``_pusher_task`` 退出，再被 ``asyncio.gather`` 拉倒整个 daemon——
+    实际表现是用户走出房间几秒回来，桌宠永久不再更新。
+
+    包 try/except：丢这条 payload，warning 后继续 loop，
+    transport 自己的重连循环会把 BLE 重新拉回来。
+
+    §A-5: 返回 bool。失败 / 未连接时返回 False，让 ``_pusher_tick`` 不更新
+    ``last_pushed_wire``——否则 BLE 重连后状态相同会被 dedup 误吞，
+    彻底修复 §A-4 commit message 里那个"走出房间回来桌宠永远不动"场景。
+    """
     if _stub:
         print(f"[stub-send] t={time.time():.3f} {json.dumps(payload, ensure_ascii=False)}")
-        return
+        return True
     if not _transport.connected():
         print(f"[send] skipped (not connected): {payload}")
-        return
-    await _transport.send(payload)
+        return False
+    try:
+        await _transport.send(payload)
+        return True
+    except Exception as e:
+        # 丢一条 payload，不打断 pusher loop；transport._connect_loop 会重连
+        print(f"[send] failed, dropped: {type(e).__name__}: {e}")
+        return False
 
 
 # ── per-session 状态翻译 ───────────────────────────────────
@@ -257,10 +279,16 @@ async def _pusher_tick(last_pushed_wire):
     if _dirty:
         wire = _to_device_wire()
         if wire != last_pushed_wire:
-            await _send(wire)
-            last_pushed_wire = wire
-            _last_pushed_wire = wire
-        _dirty = False
+            # §A-5: 只在 _send 真送出去时才记 last_pushed_wire；失败时保持旧值，
+            # 下一 tick 即便 wire 没变也会再试（修 §A-4 残留：重连后状态相同被 dedup 误吞）
+            if await _send(wire):
+                last_pushed_wire = wire
+                _last_pushed_wire = wire
+                _dirty = False
+            else:
+                _dirty = True
+        else:
+            _dirty = False
     return last_pushed_wire
 
 
@@ -397,7 +425,7 @@ async def _handle_client(reader, writer):
     writer.close()
 
 
-async def main():
+async def async_main():
     global _lock, _transport
     _lock = asyncio.Lock()
     _transport = BleTransport()
@@ -418,7 +446,15 @@ async def main():
             )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """同步 entrypoint，给 `claude-buddy-daemon` console_script 用。
+
+    console_scripts 入口必须是 sync callable；原 ``async def main()`` 改名为
+    ``async_main()``，由本函数 ``asyncio.run`` 包起来。直接 ``python daemon/ble_daemon.py``
+    跑也走这里。
+    """
+    global _stub, _force_offline
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--stub", action="store_true",
                         help="跳过 BLE 连接, _send 改 stdout 打印用于 e2e 测试")
@@ -430,10 +466,9 @@ if __name__ == "__main__":
     _stub = args.stub
     _force_offline = args.offline
 
-    # 设置日志：始终同时输出到终端和文件
-    import sys
+    import os
     import tempfile
-    log_path = args.log or __import__('os').path.join(tempfile.gettempdir(), "ble_daemon.log")
+    log_path = args.log or os.path.join(tempfile.gettempdir(), "ble_daemon.log")
 
     class TeeOutput:
         def __init__(self, file_path, original_stream):
@@ -454,7 +489,11 @@ if __name__ == "__main__":
     print(f"[daemon] 日志文件: {log_path}")
 
     try:
-        asyncio.run(main())
+        asyncio.run(async_main())
     except KeyboardInterrupt:
         print("\n[daemon] bye")
         sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
