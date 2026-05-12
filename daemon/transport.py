@@ -64,13 +64,18 @@ class BleTransport(Transport):
         self._on_connect    = None
         self._on_disconnect = None
 
-        # 读取配对配置
+        # v2.2 §A-3: 读取配对配置——优先 paired_mac，fallback device_name
+        # pair_device.py 一直在写 paired_mac，但旧版 transport 只读 device_name，
+        # 这就是 codex review 抓的 bug：同名设备会随机抽一台。
         config = _load_pairing_config()
-        if config.get("device_name"):
-            self._target_device_name = config["device_name"]
-            print(f"[daemon] 已加载配对设备: {self._target_device_name}")
+        self._paired_mac = config.get("paired_mac")
+        self._target_device_name = config.get("device_name")
+        if self._paired_mac or self._target_device_name:
+            print(
+                f"[daemon] 已加载配对: mac={self._paired_mac} "
+                f"name={self._target_device_name}"
+            )
         else:
-            self._target_device_name = None
             print("[daemon] 未配对设备，将连接任意 Claude-Buddy-* 设备")
 
     # ── 公开接口 ────────────────────────────────────────────
@@ -124,26 +129,42 @@ class BleTransport(Transport):
             try:
                 devices = await BleakScanner.discover(timeout=5.0)
 
-                # 根据配对状态选择设备
+                # v2.2 §A-3: 三段匹配
+                #   1. paired_mac 精确匹配 (V1 防多设备同名误连)
+                #   2. device_name 兜底 (macOS bleak 返回 UUID 而非 MAC，
+                #      或老 device.json 没 paired_mac 字段)
+                #   3. 都没配过 → Claude-Buddy-* 前缀首个
                 addr = None
-                if self._target_device_name:
-                    # 精确匹配配对的设备名称
+                if self._paired_mac:
+                    target_mac = self._paired_mac.upper()
+                    addr = next(
+                        (d.address for d in devices
+                         if d.address and d.address.upper() == target_mac),
+                        None,
+                    )
+
+                if not addr and self._target_device_name:
                     addr = next(
                         (d.address for d in devices if d.name == self._target_device_name),
                         None,
                     )
-                    if not addr:
-                        print(f"[daemon] 配对设备 {self._target_device_name} 未找到，重试中...")
-                else:
-                    # 前缀匹配任意 Claude-Buddy-* 设备
+
+                if not addr and not self._paired_mac and not self._target_device_name:
                     addr = next(
-                        (d.address for d in devices if d.name and d.name.startswith("Claude-Buddy-")),
+                        (d.address for d in devices
+                         if d.name and d.name.startswith("Claude-Buddy-")),
                         None,
                     )
-                    if not addr:
-                        print("[daemon] 未找到任何 Claude-Buddy 设备，重试中...")
 
                 if not addr:
+                    if self._paired_mac or self._target_device_name:
+                        print(
+                            f"[daemon] 配对设备未找到 "
+                            f"(mac={self._paired_mac} name={self._target_device_name})"
+                            f"，重试中..."
+                        )
+                    else:
+                        print("[daemon] 未找到任何 Claude-Buddy 设备，重试中...")
                     await asyncio.sleep(3)
                     continue
 
