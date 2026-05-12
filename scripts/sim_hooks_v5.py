@@ -739,6 +739,142 @@ GUI_PRIORITY_SEQUENCE = [
     # [期望] S1=C, S2=C, S3=C → 脸=绿, 消息块=绿 "S1: Done"
 ]
 
+# ── 长消息显示测试序列 ────────────────────────────────────
+# 验证 60 字符长消息的跑马灯滚动和历史记录换行
+LONG_MESSAGE_SEQUENCE = [
+    ("UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "prompt": "Analyze git history and refactor display code"
+    }),
+    ("PreToolUse(Bash-1)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_LONG_BASH1",
+        "tool_input": {"command": "git log --oneline --graph --all --decorate --abbrev-commit --author=user -20"}
+    }),
+    ("PostToolUse(Bash-1)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_LONG_BASH1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(Read-1)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_LONG_READ1",
+        "tool_input": {"file_path": "C:\\Users\\Administrator\\Projects\\MicroPython_Claude_Assistant\\device\\display_renderer.py"}
+    }),
+    ("PostToolUse(Read-1)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_LONG_READ1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(Grep-1)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Grep",
+        "tool_use_id": "toolu_LONG_GREP1",
+        "tool_input": {"pattern": "def _update_main.*completed_until.*dizzy_until.*session_dots"}
+    }),
+    ("PostToolUse(Grep-1)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Grep",
+        "tool_use_id": "toolu_LONG_GREP1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(Bash-2)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_LONG_BASH2",
+        "tool_input": {"command": "find . -name '*.py' -type f -exec grep -l 'async def' {} \\; | head -20"}
+    }),
+    ("PostToolUse(Bash-2)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_LONG_BASH2",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(Edit-1)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_LONG_EDIT1",
+        "tool_input": {"file_path": "C:\\Users\\Administrator\\Projects\\MicroPython_Claude_Assistant\\daemon\\ble_daemon.py"}
+    }),
+    ("PostToolUse(Edit-1)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Edit",
+        "tool_use_id": "toolu_LONG_EDIT1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(Write-1)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Write",
+        "tool_use_id": "toolu_LONG_WRITE1",
+        "tool_input": {"file_path": "C:\\Users\\Administrator\\Projects\\MicroPython_Claude_Assistant\\tests\\test_long_message.py"}
+    }),
+    ("PostToolUse(Write-1)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Write",
+        "tool_use_id": "toolu_LONG_WRITE1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(Glob-1)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Glob",
+        "tool_use_id": "toolu_LONG_GLOB1",
+        "tool_input": {"pattern": "**/*display*renderer*.py"}
+    }),
+    ("PostToolUse(Glob-1)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Glob",
+        "tool_use_id": "toolu_LONG_GLOB1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(Bash-3)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_LONG_BASH3",
+        "tool_input": {"command": "python -m pytest tests/ -v --tb=short --maxfail=3 --color=yes"}
+    }),
+    ("PostToolUse(Bash-3)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_LONG_BASH3",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PreToolUse(WebSearch-1)", "PreToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "WebSearch",
+        "tool_use_id": "toolu_LONG_WEB1",
+        "tool_input": {"url": "https://docs.micropython.org/en/latest/library/lvgl.html#display-rotation"}
+    }),
+    ("PostToolUse(WebSearch-1)", "PostToolUse.json", {
+        "session_id": "long_msg_test",
+        "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant",
+        "tool_name": "WebSearch",
+        "tool_use_id": "toolu_LONG_WEB1",
+        "tool_response": {"interrupted": False}
+    }),
+]
+
 # ── 审批通知序列 ──────────────────────────────────────────
 # 验证 needs_approval=True 时设备显示 PENDING（黄色），审批完成后恢复
 # 注意：hook_bridge 立即返回 {}，审批由 Claude Code 终端完成
@@ -841,6 +977,7 @@ ALL_SEQUENCES = [
     (MULTI_SESSION_ERROR_SEQUENCE, "多 Session 错误测试"),
     (RAPID_FIRE_SEQUENCE,              "快速连续工具测试"),
     (SUBAGENT_SEQUENCE,                "Subagent 嵌套测试"),
+    (LONG_MESSAGE_SEQUENCE,            "长消息显示测试"),
     (APPROVAL_SEQUENCE,                "审批通知测试"),
     (GUI_FACE_TRANSITIONS_SEQUENCE,    "GUI 脸部状态转换测试"),
     (GUI_5SESSIONS_SEQUENCE,           "GUI 五 Session 并发测试"),
@@ -935,6 +1072,8 @@ def _run_sequence(sequence, test_name, no_cooldown):
     print(f"\n[sim] {test_name}：发送 {len(sequence)} 个 hook 事件")
     print(f"{'─'*60}")
     slow_count = 0
+    # 长消息测试使用更长间隔，便于观察跑马灯滚动
+    interval = 2.5 if "长消息" in test_name else 0.5
     for label, filename, patch in sequence:
         print(f"\n[{label}]")
         raw = _load_fixture(filename, patch)
@@ -953,7 +1092,7 @@ def _run_sequence(sequence, test_name, no_cooldown):
         print(f"  response : {result}  [{status}]  ({elapsed:.2f}s)")
         if not _verify_response_time(elapsed, label):
             slow_count += 1
-        time.sleep(0.5)
+        time.sleep(interval)
 
     print(f"\n{'='*60}")
     print(f"[sim] {test_name} 完成，共 {len(sequence)} 个事件")
@@ -1014,6 +1153,7 @@ def main():
     parser.add_argument("--gui-face", action="store_true", help="GUI 脸部状态转换测试")
     parser.add_argument("--gui-5sessions", action="store_true", help="GUI 五 Session 并发测试")
     parser.add_argument("--gui-priority", action="store_true", help="GUI 消息块优先级测试")
+    parser.add_argument("--long-message", action="store_true", help="长消息显示测试（60 字符）")
     parser.add_argument("--approval", action="store_true", help="审批通知测试（PENDING 状态）")
     parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
@@ -1088,6 +1228,8 @@ def main():
         sequence, test_name = GUI_5SESSIONS_SEQUENCE, "GUI 五 Session 并发测试"
     elif args.gui_priority:
         sequence, test_name = GUI_PRIORITY_SEQUENCE, "GUI 消息块优先级测试"
+    elif args.long_message:
+        sequence, test_name = LONG_MESSAGE_SEQUENCE, "长消息显示测试"
     elif args.approval:
         sequence, test_name = APPROVAL_SEQUENCE, "审批通知测试"
     else:

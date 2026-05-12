@@ -253,6 +253,7 @@ class DisplayRenderer:
         msg_label = lv.label(msg_block)
         msg_label.set_text("Waiting...")
         msg_label.set_style_text_color(_C_TEXT_WHITE, lv.PART.MAIN)
+        msg_label.set_long_mode(lv.label.LONG_MODE.SCROLL_CIRCULAR)
         msg_label.set_width(SCREEN_W - 40)
         self._msg_block = msg_block
         self._msg_label = msg_label

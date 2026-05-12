@@ -134,7 +134,7 @@ def _build_msg(sess: _Session) -> str:
         return MSG_COMPLETED
     for t in sess.tools.values():
         if t["status"] == "running":
-            summary = t["summary"][:40] if t["summary"] else ""
+            summary = t["summary"][:80] if t["summary"] else ""
             return f"{t['tool']}: {summary}" if summary else t["tool"]
     return ""
 
@@ -154,10 +154,10 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
         return result
     for t in sess.tools.values():
         if t["status"] == "running":
-            summary = t.get("summary", "")[:10]
+            summary = t.get("summary", "")[:50]
             m = f"{t['tool']}: {summary}" if summary else t["tool"]
             result["s"] = "W"
-            result["m"] = m[:15]
+            result["m"] = m[:60]
             return result
     result["s"] = "I"
     return result
