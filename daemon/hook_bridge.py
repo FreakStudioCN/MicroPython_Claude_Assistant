@@ -313,12 +313,15 @@ def _spawn_daemon_detached() -> None:
         if sys.platform == "win32":
             DETACHED_PROCESS = 0x00000008
             CREATE_NEW_PROCESS_GROUP = 0x00000200
+            # CREATE_NO_WINDOW 抑制 console-subsystem 子进程（如 uv.exe）的闪窗。
+            # 单 DETACHED_PROCESS 不阻止 OS 给 console-subsystem 子进程分配窗口。
+            CREATE_NO_WINDOW = 0x08000000
             subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 close_fds=True,
             )
         else:
