@@ -277,8 +277,7 @@ def visualize(png_path, data, out_path):
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.dirname(script_dir)
-    png_path = os.path.join(root_dir, "claude-code-logo.png")
+    png_path = os.path.join(script_dir, "assets", "claude-code-logo.png")
 
     if not os.path.exists(png_path):
         print(f"ERROR: not found: {png_path}")

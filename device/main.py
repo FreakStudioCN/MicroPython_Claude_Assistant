@@ -61,10 +61,7 @@ async def _main():
     print(f"[mem] after BLE: free={gc.mem_free()} alloc={gc.mem_alloc()}")
 
     _msg_queue = Queue()
-    if cfg.VARIANT == "clock":
-        await asyncio.gather(ble_recv_task(), render_task())
-    else:
-        await asyncio.gather(ble_recv_task(), render_task())
+    await asyncio.gather(ble_recv_task(), render_task())
 
 
 asyncio.run(_main())
