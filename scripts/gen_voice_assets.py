@@ -7,6 +7,21 @@ gen_voice_assets.py — PC端批量生成闹钟语音PCM文件
 import asyncio, json, struct, uuid, wave, winsound, tempfile, os
 import websockets
 
+for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+    os.environ.pop(_k, None)
+
+def _resample_pcm(data: bytes, from_rate: int, to_rate: int) -> bytes:
+    """简单整数比率降采样（16bit mono）。仅支持 from_rate 为 to_rate 整数倍。"""
+    if from_rate == to_rate:
+        return data
+    step = from_rate // to_rate
+    samples = memoryview(data).cast('h')  # int16
+    out = bytearray()
+    for i in range(0, len(samples), step):
+        s = samples[i]
+        out += struct.pack('<h', s)
+    return bytes(out)
+
 APP_ID       = "5314645736"
 ACCESS_TOKEN = "zwYWsUt4CGk5Cvp-2FYAFBl3X-Fh1Wmg"
 ASSETS_DIR   = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "device", "assets")
@@ -379,15 +394,22 @@ SAMPLES = {
         "连接成功，我已经上线了，随时可以为您处理任务。",
         "主人好，我已经准备就绪，有什么需要尽管说。",
     ],
+    "disconnect": [
+        "主人，连接已断开，我暂时无法接收新任务，请检查一下连接状态。",
+        "与主人的连接中断了，我会持续等待重新连接，请稍候。",
+    ],
     "idle": [
         "当前没有进行中的任务，我在待机状态，随时等待您的新指令。",
+    ],
+    "startup": [
+        "主人你好，我是码克助手，负责监控 Claude 任务进度，随时提醒您查看终端。",
     ],
 }
 
 # ── 开发者编辑这里 ────────────────────────────────────────────────
-# (voice_short, pitch, speed, volume, emotion)
+# (voice_short, pitch, speed, volume, emotion, sample_rate)
 JOBS = [
-    ("bv701", 1.2, 1.6, 1.5, None),
+    ("bv701", 1.2, 1.6, 1.5, None, 8000),
 ]
 
 
@@ -416,7 +438,7 @@ def _parse_chunk(res: bytes):
     return b"", False
 
 async def synthesize(text, voice_type, pitch, speed, volume, emotion,
-                     app_id=None, access_token=None) -> bytes:
+                     app_id=None, access_token=None, sample_rate=16000) -> bytes:
     app_id       = app_id or APP_ID
     access_token = access_token or ACCESS_TOKEN
     reqid = str(uuid.uuid4()).replace("-", "")
@@ -426,7 +448,7 @@ async def synthesize(text, voice_type, pitch, speed, volume, emotion,
         "audio":   {
             "voice_type": voice_type, "encoding": "pcm",
             "speed_ratio": speed, "volume_ratio": volume, "pitch_ratio": pitch,
-            "sample_rate": 16000,
+            "sample_rate": 16000,  # API 固定 16kHz，客户端再降采样
         },
         "request": {"reqid": reqid, "text": text, "text_type": "plain", "operation": "submit"},
     }
@@ -443,7 +465,8 @@ async def synthesize(text, voice_type, pitch, speed, volume, emotion,
                 chunks.append(audio)
             if done:
                 break
-    return b"".join(chunks)
+    pcm = b"".join(chunks)
+    return _resample_pcm(pcm, 16000, sample_rate)
 
 
 # ── 播放 PCM ──────────────────────────────────────────────────────
@@ -459,9 +482,9 @@ def play_pcm(pcm: bytes, rate=16000):
 # ── 主流程 ────────────────────────────────────────────────────────
 async def main(auto=False):
     os.makedirs(ASSETS_DIR, exist_ok=True)
-    for voice_short, pitch, speed, volume, emotion in JOBS:
+    for voice_short, pitch, speed, volume, emotion, sample_rate in JOBS:
         voice_type = VOICES[voice_short]
-        tag = f"{voice_short}-{pitch}-{speed}-{volume}"
+        tag = f"{voice_short}-{pitch}-{speed}-{volume}-{sample_rate}"
         for state, texts in SAMPLES.items():
             for idx, text in enumerate(texts, 1):
                 fname = f"{tag}-{state}-{idx:02d}.pcm"
@@ -472,11 +495,12 @@ async def main(auto=False):
                 print(f"\n[gen]  {fname}")
                 print(f"       {text}")
                 try:
-                    pcm = await synthesize(text, voice_type, pitch, speed, volume, emotion)
+                    pcm = await synthesize(text, voice_type, pitch, speed, volume, emotion,
+                                           sample_rate=sample_rate)
                 except Exception as e:
                     print(f"  ERROR: {e}")
                     continue
-                play_pcm(pcm)
+                play_pcm(pcm, rate=sample_rate)
                 if auto:
                     ans = "k"
                 else:
@@ -547,6 +571,7 @@ class App(tk.Tk):
         self.title("豆包语音PCM生成器")
         self.resizable(False, False)
         self._pcm = None
+        self._pcm_rate = 16000
         self._build()
 
     def _build(self):
@@ -613,6 +638,12 @@ class App(tk.Tk):
                 lbl.config(text=f"{var.get():.2f}")
             getattr(self, attr).trace_add("write", lambda *a, fn=_upd, v=getattr(self, attr): fn(v))
             _upd(None)
+
+        ttk.Label(f1, text="采样率").grid(row=4, column=0, **pad, sticky="e")
+        self._rate_var = tk.IntVar(value=8000)
+        ttk.Combobox(f1, textvariable=self._rate_var,
+                     values=[8000, 16000, 24000], width=8,
+                     state="readonly").grid(row=4, column=1, **pad, sticky="w")
 
         # ── 状态 / 文本 ───────────────────────────────────────────
         f2 = ttk.LabelFrame(self, text="状态 / 文本")
@@ -712,14 +743,17 @@ class App(tk.Tk):
         speed  = round(self._speed.get(), 2)
         pitch  = round(self._pitch.get(), 2)
         volume = round(self._vol.get(),   2)
+        rate   = self._rate_var.get()
 
         self._set_buttons(True)
         self._status.config(text="生成中…", foreground="blue")
 
         def _run():
             try:
-                pcm = asyncio.run(synthesize(text, voice_type, pitch, speed, volume, emotion))
+                pcm = asyncio.run(synthesize(text, voice_type, pitch, speed, volume, emotion,
+                                             sample_rate=rate))
                 self._pcm = pcm
+                self._pcm_rate = rate
                 self.after(0, lambda: self._status.config(
                     text=f"完成 {len(pcm):,} bytes", foreground="green"))
             except Exception as e:
@@ -734,7 +768,8 @@ class App(tk.Tk):
     def _play(self):
         if not self._pcm:
             return
-        threading.Thread(target=play_pcm, args=(self._pcm,), daemon=True).start()
+        rate = getattr(self, "_pcm_rate", 16000)
+        threading.Thread(target=play_pcm, args=(self._pcm, rate), daemon=True).start()
 
     def _save(self):
         if not self._pcm:
@@ -746,7 +781,8 @@ class App(tk.Tk):
         speed     = round(self._speed.get(), 2)
         pitch     = round(self._pitch.get(), 2)
         volume    = round(self._vol.get(),   2)
-        default   = f"{voice_key}-{pitch}-{speed}-{volume}-{state}-{idx:02d}.pcm"
+        rate      = getattr(self, "_pcm_rate", 16000)
+        default   = f"{voice_key}-{pitch}-{speed}-{volume}-{rate}-{state}-{idx:02d}.pcm"
         path = filedialog.asksaveasfilename(
             defaultextension=".pcm",
             initialdir=ASSETS_DIR,

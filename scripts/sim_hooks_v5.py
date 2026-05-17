@@ -963,6 +963,121 @@ APPROVAL_SEQUENCE = [
     # [期望] 设备: 恢复 IDLE（waiting=0）
 ]
 
+# ── 闹钟版语音测试序列（--clock）────────────────────────────
+# 目标：验证 LightRenderer 语音触发时序
+#   1. 正常触发：W → C，全链路 DeepSeek+TTS 跑通
+#   2. busy 丢弃：连续快速 C/E/C，第二三个被正确丢弃
+#   3. 等待审批触发：W → P，验证 P 状态语音
+#   4. 3 session 并发：其中一个 C，验证只触发一次语音
+#
+# 间隔 0.5s 模拟真实 Claude Code 频率（比普通测试更激进）
+CLOCK_SEQUENCE = [
+    # ── 场景1：正常完成触发语音 ──────────────────────────────
+    ("S1: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "clock_s1",
+        "cwd": "C:\\Projects\\danke_ai",
+        "prompt": "帮我整理代码"
+    }, 3.0),
+    ("S1: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "clock_s1",
+        "cwd": "C:\\Projects\\danke_ai",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_CLK_R1",
+        "tool_input": {"file_path": "main.py"}
+    }, 3.0),
+    ("S1: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "clock_s1",
+        "cwd": "C:\\Projects\\danke_ai",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_CLK_R1",
+        "tool_response": {"interrupted": False}
+    }, 3.0),
+    ("S1: Stop(完成)", "PostToolBatch.json", {
+        "session_id": "clock_s1",
+        "cwd": "C:\\Projects\\danke_ai",
+    }, 15.0),  # 等语音播完
+
+    # ── 场景2：快速 C→E→C，验证 busy 丢弃 ───────────────────
+    ("S2: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "clock_s2",
+        "cwd": "C:\\Projects\\danke_ai",
+        "prompt": "运行测试"
+    }, 3.0),
+    ("S2: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "clock_s2",
+        "cwd": "C:\\Projects\\danke_ai",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_CLK_B1",
+        "tool_input": {"command": "pytest tests/"}
+    }, 3.0),
+    ("S2: Stop(完成→触发)", "PostToolBatch.json", {
+        "session_id": "clock_s2",
+        "cwd": "C:\\Projects\\danke_ai",
+    }, 0.5),  # 故意快速，测试覆盖
+    ("S2: PostToolUseFailure(busy丢弃)", "PostToolUseFailure.json", {
+        "session_id": "clock_s2",
+        "cwd": "C:\\Projects\\danke_ai",
+    }, 0.5),  # 故意快速
+    ("S2: Stop(再次完成→丢弃)", "PostToolBatch.json", {
+        "session_id": "clock_s2",
+        "cwd": "C:\\Projects\\danke_ai",
+    }, 15.0),  # 等语音播完
+
+    # ── 场景3：等待审批触发语音 ──────────────────────────────
+    ("S3: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "clock_s3",
+        "cwd": "C:\\Projects\\danke_ai",
+        "prompt": "删除临时文件"
+    }, 3.0),
+    ("S3: PreToolUse(Bash/危险)", "PreToolUse.json", {
+        "session_id": "clock_s3",
+        "cwd": "C:\\Projects\\danke_ai",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_CLK_B2",
+        "tool_input": {"command": "rm -rf /tmp/cache"}
+    }, 3.0),
+    ("S3: Notification(等待审批)", "Notification.json", {
+        "session_id": "clock_s3",
+        "cwd": "C:\\Projects\\danke_ai",
+    }, 15.0),  # 等语音播完
+    ("S3: PostToolUse(审批后完成)", "PostToolUse.json", {
+        "session_id": "clock_s3",
+        "cwd": "C:\\Projects\\danke_ai",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_CLK_B2",
+        "tool_response": {"interrupted": False}
+    }, 5.0),
+
+    # ── 场景4：3 session 并发，只有一个 C ────────────────────
+    ("S4a: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "clock_s4a",
+        "cwd": "C:\\Projects\\proj_a",
+        "prompt": "分析日志"
+    }, 1.0),
+    ("S4b: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "clock_s4b",
+        "cwd": "C:\\Projects\\proj_b",
+        "prompt": "生成报告"
+    }, 1.0),
+    ("S4c: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "clock_s4c",
+        "cwd": "C:\\Projects\\proj_c",
+        "prompt": "更新依赖"
+    }, 5.0),
+    ("S4a: Stop(完成)", "PostToolBatch.json", {
+        "session_id": "clock_s4a",
+        "cwd": "C:\\Projects\\proj_a",
+    }, 15.0),
+    ("S4b: PostToolUseFailure(出错)", "PostToolUseFailure.json", {
+        "session_id": "clock_s4b",
+        "cwd": "C:\\Projects\\proj_b",
+    }, 15.0),
+    ("S4c: Stop(完成)", "PostToolBatch.json", {
+        "session_id": "clock_s4c",
+        "cwd": "C:\\Projects\\proj_c",
+    }, 5.0),
+]
+
 # ── 所有序列（--all 模式）────────────────────────────────
 ALL_SEQUENCES = [
     (BASIC_SEQUENCE,               "基本功能测试"),
@@ -1073,8 +1188,10 @@ def _run_sequence(sequence, test_name, no_cooldown):
     print(f"{'─'*60}")
     slow_count = 0
     # 长消息测试使用更长间隔，便于观察跑马灯滚动
-    interval = 2.5 if "长消息" in test_name else 0.5
-    for label, filename, patch in sequence:
+    default_interval = 2.5 if "长消息" in test_name else (7.0 if "闹钟" in test_name else 0.5)
+    for item in sequence:
+        label, filename, patch = item[0], item[1], item[2]
+        interval = item[3] if len(item) > 3 else default_interval
         print(f"\n[{label}]")
         raw = _load_fixture(filename, patch)
         fixture_json = json.dumps(raw, ensure_ascii=False).encode("utf-8")
@@ -1154,6 +1271,8 @@ def main():
     parser.add_argument("--gui-5sessions", action="store_true", help="GUI 五 Session 并发测试")
     parser.add_argument("--gui-priority", action="store_true", help="GUI 消息块优先级测试")
     parser.add_argument("--long-message", action="store_true", help="长消息显示测试（60 字符）")
+    parser.add_argument("--clock", action="store_true",
+                        help="闹钟版语音测试（TTS 触发时序、busy 丢弃、3 session 并发）")
     parser.add_argument("--approval", action="store_true", help="审批通知测试（PENDING 状态）")
     parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
@@ -1230,6 +1349,8 @@ def main():
         sequence, test_name = GUI_PRIORITY_SEQUENCE, "GUI 消息块优先级测试"
     elif args.long_message:
         sequence, test_name = LONG_MESSAGE_SEQUENCE, "长消息显示测试"
+    elif args.clock:
+        sequence, test_name = CLOCK_SEQUENCE, "闹钟版语音测试"
     elif args.approval:
         sequence, test_name = APPROVAL_SEQUENCE, "审批通知测试"
     else:

@@ -4,13 +4,13 @@ except ImportError:
     import asyncio
 
 import gc
+import config as cfg
 from queue import Queue
-from display_renderer import DisplayRenderer
 import protocol as p
 
 _transport = None
 _msg_queue = None
-_renderer = None
+_renderer  = None
 
 
 async def ble_recv_task():
@@ -39,33 +39,32 @@ async def render_task():
 async def _main():
     global _msg_queue, _renderer, _transport
 
-    # 启动延时 3s，方便 mpremote 连接
     print("[init] waiting 3s for mpremote connection...")
     await asyncio.sleep(3)
-
-    # 初始状态内存
     gc.collect()
     print(f"[mem] startup: free={gc.mem_free()} alloc={gc.mem_alloc()}")
 
-    # 1. 先初始化 LVGL（占用帧缓冲）
-    _renderer = DisplayRenderer()
+    if cfg.VARIANT == "clock":
+        from light_renderer import LightRenderer
+        _renderer = LightRenderer()
+    else:
+        from display_renderer import DisplayRenderer
+        _renderer = DisplayRenderer()
+
     await _renderer.init()
     gc.collect()
-    print(f"[mem] after UI: free={gc.mem_free()} alloc={gc.mem_alloc()}")
-    print("[init] LVGL initialized")
+    print(f"[mem] after renderer: free={gc.mem_free()} alloc={gc.mem_alloc()}")
 
-    # 2. 再导入 BLE（此时帧缓冲已分配，剩余内存给 BLE）
-    print("[init] loading BLE stack...")
     from transport import BleTransport
-    gc.collect()
-    print(f"[mem] after import: free={gc.mem_free()} alloc={gc.mem_alloc()}")
-
     _transport = BleTransport()
     gc.collect()
-    print(f"[mem] after BLE init: free={gc.mem_free()} alloc={gc.mem_alloc()}")
-    print("[init] BLE transport loaded")
+    print(f"[mem] after BLE: free={gc.mem_free()} alloc={gc.mem_alloc()}")
 
     _msg_queue = Queue()
-    await asyncio.gather(ble_recv_task(), render_task())
+    if cfg.VARIANT == "clock":
+        await asyncio.gather(ble_recv_task(), render_task())
+    else:
+        await asyncio.gather(ble_recv_task(), render_task())
+
 
 asyncio.run(_main())

@@ -57,7 +57,6 @@ class BleTransport(Transport):
                 if not self.connected():
                     raise OSError("BLE disconnected")
                 continue
-            self._last_recv = time.time()
             self._buf += data
             chunks += 1
             if b"\n" in self._buf:
