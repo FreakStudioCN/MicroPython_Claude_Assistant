@@ -144,7 +144,7 @@ def _normalize_pre_tool(event: dict) -> dict:
             "tool":           tool,
             "tool_category":  _tool_category(tool),
             "summary":        _hint_from_tool_input(tool_input),
-            "needs_approval": tool in APPROVAL_TOOLS,
+            "needs_approval": False,
             "tool_use_id":    event.get("tool_use_id", ""),
             "risk_level":     _classify_risk(tool, tool_input),
         },
@@ -271,6 +271,15 @@ def _normalize_stop_failure(event: dict) -> dict:
     }
 
 
+def _normalize_stop(event: dict) -> dict:
+    return {
+        "type": "event",
+        "v": 2,
+        "event": {"kind": "stop"},
+        "generic": _generic(event),
+    }
+
+
 def _normalize_fallback(event: dict) -> dict:
     """未识别 hook (Stop / SessionStart / ... 23 类),daemon 会忽略 kind=unknown。"""
     return {
@@ -290,6 +299,7 @@ NORMALIZERS = {
     "Notification":       _normalize_notification,
     "UserPromptSubmit":   _normalize_user_prompt,
     "StopFailure":        _normalize_stop_failure,
+    "Stop":               _normalize_stop,
 }
 
 

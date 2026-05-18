@@ -78,6 +78,8 @@ class _Session:
         self.completed_until: float = 0.0
         self.completed_inferred_for_ts: float = 0.0
         self.dizzy_until: float = 0.0
+        self.last_tool_start_ts: float = 0.0   # 最近一次 tool_start 时间（保证W至少推一次）
+        self.last_stop_ts: float = 0.0          # 最近一次 stop 时间（过滤stop后乱序notification）
 
 
 _sessions: dict = {}   # session_id → _Session
@@ -183,6 +185,10 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
             result["s"] = "W"
             result["m"] = m[:60]
             return result
+    # 快速工具保证：tool_start后400ms内至少显示一次W
+    if sess.last_tool_start_ts > 0 and (now - sess.last_tool_start_ts) < 0.4:
+        result["s"] = "W"
+        return result
     result["s"] = "I"
     return result
 
@@ -253,22 +259,8 @@ async def _pusher_tick(last_pushed_wire):
                 and now - s.last_activity_ts > SESSION_CLEANUP_S]:
         del _sessions[sid]
 
-    # 每个 session 的 task_complete 推断
-    for sess_id, sess in list(_sessions.items()):
-        threshold = 8.0 if sess.has_subagent else TASK_COMPLETE_QUIET_S
-        if (
-            len(sess.tools) == 0
-            and sess.last_activity_ts > 0
-            and now - sess.last_activity_ts > threshold
-            and sess.completed_inferred_for_ts != sess.last_activity_ts
-            and sess.dizzy_until < now
-        ):
-            sess.completed_until = now + COMPLETED_HOLD_S
-            sess.completed_inferred_for_ts = sess.last_activity_ts
-            _mark_dirty()
-            print(f"[infer] task_complete session={sess_id!r} (quiet={now - sess.last_activity_ts:.1f}s)")
-
-        # completed 到期标 dirty
+    # completed 到期标 dirty
+    for sess in _sessions.values():
         if sess.completed_until > 0 and sess.completed_until <= now:
             if last_pushed_wire:
                 for s in last_pushed_wire.get("ss", []):
@@ -277,6 +269,10 @@ async def _pusher_tick(last_pushed_wire):
                         break
 
     if _dirty:
+        # 先清标志再捕获状态：await _send() 期间若有新事件调用 _mark_dirty()，
+        # 下一 tick 能正确重新推送，避免 stop/tool_done 在 yield 窗口内写入的
+        # dirty=True 被 send 返回后的赋值覆盖（§A-6 竞态修复）。
+        _dirty = False
         wire = _to_device_wire()
         if wire != last_pushed_wire:
             # §A-5: 只在 _send 真送出去时才记 last_pushed_wire；失败时保持旧值，
@@ -284,11 +280,8 @@ async def _pusher_tick(last_pushed_wire):
             if await _send(wire):
                 last_pushed_wire = wire
                 _last_pushed_wire = wire
-                _dirty = False
             else:
-                _dirty = True
-        else:
-            _dirty = False
+                _dirty = True   # 发送失败，恢复 dirty 等下一 tick 重试
     return last_pushed_wire
 
 
@@ -336,11 +329,13 @@ async def _handle_envelope(env: dict) -> dict:
             "summary": summary,
             "status": "running",
             "ts": now,
+            "needs_approval": needs_approval,
         }
         if needs_approval:
             sess.waiting += 1
             print(f"[approval] session={session_id!r} waiting={sess.waiting}")
         sess.last_activity_ts = now
+        sess.last_tool_start_ts = now  # 保证快速工具W至少推一次
         _mark_dirty()
         return {"decision": "once"}
 
@@ -349,11 +344,10 @@ async def _handle_envelope(env: dict) -> dict:
         interrupted = event.get("interrupted", False)
 
         if tool_use_id in sess.tools:
+            if sess.tools[tool_use_id].get("needs_approval") and sess.waiting > 0:
+                sess.waiting -= 1
+                print(f"[approval] session={session_id!r} done, waiting={sess.waiting}")
             del sess.tools[tool_use_id]
-
-        if sess.waiting > 0:
-            sess.waiting -= 1
-            print(f"[approval] session={session_id!r} done, waiting={sess.waiting}")
 
         sess.last_activity_ts = now
 
@@ -370,11 +364,10 @@ async def _handle_envelope(env: dict) -> dict:
         is_interrupt = event.get("is_interrupt", False)
 
         if tool_use_id in sess.tools:
+            if sess.tools[tool_use_id].get("needs_approval") and sess.waiting > 0:
+                sess.waiting -= 1
+                print(f"[approval] session={session_id!r} error, waiting={sess.waiting}")
             del sess.tools[tool_use_id]
-
-        if sess.waiting > 0:
-            sess.waiting -= 1
-            print(f"[approval] session={session_id!r} error, waiting={sess.waiting}")
 
         _enter_error_state(sess, now, hard_reset=False, error_msg=error_msg, is_interrupt=is_interrupt)
         return {"ok": True}
@@ -384,13 +377,36 @@ async def _handle_envelope(env: dict) -> dict:
         _mark_dirty()
         return {"ok": True}
 
+    if kind == "notification":
+        if event.get("notification_type") == "permission_prompt":
+            # stop后1秒内的乱序notification忽略
+            if sess.last_stop_ts > 0 and (now - sess.last_stop_ts) < 1.0:
+                return {"ok": True}
+            sess.waiting += 1
+            print(f"[approval] session={session_id!r} permission_prompt, waiting={sess.waiting}")
+            sess.last_activity_ts = now
+            _mark_dirty()
+        return {"ok": True}
+
     if kind == "user_prompt":
         sess.last_activity_ts = now
         sess.completed_until = 0.0
+        sess.completed_inferred_for_ts = now
         sess.has_subagent = False
         sess.current_error = ""
         sess.current_interrupted = False
+        sess.waiting = 0
         _mark_dirty()
+        return {"ok": True}
+
+    if kind == "stop":
+        sess.tools.clear()
+        sess.waiting = 0
+        sess.last_stop_ts = now
+        if sess.dizzy_until < now and not sess.current_error:
+            sess.completed_until = now + COMPLETED_HOLD_S
+            sess.completed_inferred_for_ts = now
+            _mark_dirty()
         return {"ok": True}
 
     if kind == "task_error":
