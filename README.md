@@ -11,6 +11,13 @@
 | ![](docs/claude-knock2.png) | ![](docs/claude-panel2.jpg) |
 | ![](docs/claude-knock3.jpg) | ![](docs/claude-panel3.jpg) |
 
+### 使用场景实拍
+
+| | |
+|:---:|:---:|
+| ![](docs/claude-knock4.png) | ![](docs/claude-knock5.png) |
+| ![](docs/claude-knock6.png) | ![](docs/claude-knock7.png) |
+
 ---
 
 ## 硬件形态
