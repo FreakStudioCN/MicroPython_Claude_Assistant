@@ -2,6 +2,9 @@
 
 将 Claude Code 的工具执行状态实时可视化为 ESP32 桌宠设备——灯光闪烁 + 语音播报提醒用户查看终端。
 
+[![演示文稿](https://img.shields.io/badge/📊_演示文稿-GitHub_Pages-00d4ff?style=for-the-badge)](https://freakstudiocn.github.io/MicroPython_Claude_Assistant/presentation.html)
+[![备用链接](https://img.shields.io/badge/备用-htmlpreview-555555?style=for-the-badge)](https://htmlpreview.github.io/?https://github.com/FreakStudioCN/MicroPython_Claude_Assistant/blob/main/presentation.html)
+
 | clock 闹钟版 | panel 面板版 |
 |:---:|:---:|
 | ![](docs/claude-knock.jpg) | ![](docs/claude-panel.jpg) |
