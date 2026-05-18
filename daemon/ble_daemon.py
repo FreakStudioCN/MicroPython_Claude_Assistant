@@ -80,6 +80,7 @@ class _Session:
         self.dizzy_until: float = 0.0
         self.last_tool_start_ts: float = 0.0   # 最近一次 tool_start 时间（保证W至少推一次）
         self.last_stop_ts: float = 0.0          # 最近一次 stop 时间（过滤stop后乱序notification）
+        self.turn_active: bool = False          # user_prompt→True, stop→False；无工具时也显示W
 
 
 _sessions: dict = {}   # session_id → _Session
@@ -178,6 +179,10 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
     if sess.waiting > 0:
         result["s"] = "P"
         return result
+    # turn_active：user_prompt 到 stop 之间，无工具时也显示 W（思考中 / 处理结果中）
+    if sess.turn_active:
+        result["s"] = "W"
+        return result
     for t in sess.tools.values():
         if t["status"] == "running":
             summary = t.get("summary", "")[:50]
@@ -200,7 +205,7 @@ def _to_device_wire() -> dict:
         has_tools = bool(sess.tools)
         recently  = sess.last_activity_ts > 0 and (now - sess.last_activity_ts) < SESSION_ACTIVE_TIMEOUT_S
         special   = sess.completed_until > now or sess.dizzy_until > now
-        if has_tools or recently or special:
+        if has_tools or recently or special or sess.turn_active:
             active.append(_session_to_wire(sid, sess))
     return {"ss": active}
 
@@ -252,9 +257,10 @@ async def _pusher_tick(last_pushed_wire):
 
     now = time.time()
 
-    # 清理长期无活动 session
+    # 清理长期无活动 session（turn_active 期间不清理，防止思考阶段状态丢失）
     for sid in [k for k, s in list(_sessions.items())
                 if not s.tools
+                and not s.turn_active
                 and s.last_activity_ts > 0
                 and now - s.last_activity_ts > SESSION_CLEANUP_S]:
         del _sessions[sid]
@@ -354,6 +360,7 @@ async def _handle_envelope(env: dict) -> dict:
         if len(sess.tools) == 0:
             sess.current_error = ""
             sess.current_interrupted = interrupted
+            sess.waiting = 0  # 所有工具完成，待审批状态已消化
 
         _mark_dirty()
         return {"ok": True}
@@ -396,12 +403,14 @@ async def _handle_envelope(env: dict) -> dict:
         sess.current_error = ""
         sess.current_interrupted = False
         sess.waiting = 0
+        sess.turn_active = True
         _mark_dirty()
         return {"ok": True}
 
     if kind == "stop":
         sess.tools.clear()
         sess.waiting = 0
+        sess.turn_active = False
         sess.last_stop_ts = now
         if sess.dizzy_until < now and not sess.current_error:
             sess.completed_until = now + COMPLETED_HOLD_S

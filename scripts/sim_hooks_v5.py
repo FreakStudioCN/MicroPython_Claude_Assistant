@@ -4,11 +4,12 @@
 # 用途: 模拟 Claude Code 触发 hook 事件，测试 v5 纯展示模式
 #       → hook_bridge.py（真实运行）→ ble_daemon.py（真实运行）→ BLE → ESP32
 #
-# v5 变化:
-#   - 删除审批等待（所有工具立即返回）
-#   - 删除离线风险测试（daemon 不再处理审批）
-#   - 删除重连 PENDING 测试（无 PENDING 状态）
-#   - 新增多 session 测试
+# v5 变化（对齐当前 ble_daemon.py）:
+#   - C 状态：由 Stop hook 触发（设 completed_until），不再依赖静默期推断
+#   - P 状态：由 Notification(permission_prompt) 触发（waiting++），
+#             由 stop/user_prompt 清零（tool_done 不清 waiting）
+#   - needs_approval 在 hook_bridge 中固定为 False，P 状态不由 PreToolUse 触发
+#   - Stop.json fixture 新增，CLOCK_SEQUENCE 中的 Stop 事件已修正为使用它
 #
 # 运行前提: ESP32 已烧录固件并开机，或先手动启动 ble_daemon.py --stub 做无设备测试
 #
@@ -61,6 +62,7 @@ BASIC_SEQUENCE = [
     ("PostToolUseFailure", "PostToolUseFailure.json",  None),
     ("Notification",       "Notification.json",        None),
     ("StopFailure",        "StopFailure.json",         None),
+    ("Stop",               "Stop.json",                None),
 ]
 
 # ── 多 Session 测试序列 ────────────────────────────────────
@@ -140,6 +142,9 @@ MULTI_SESSION_SEQUENCE = [
         "tool_use_id": "toolu_S3_GREP1",
         "tool_response": {"interrupted": False}
     }),
+    ("S1: Stop", "Stop.json", {"session_id": "session_1", "cwd": "C:\\Users\\user\\Projects\\MyProject"}),
+    ("S2: Stop", "Stop.json", {"session_id": "session_2", "cwd": "C:\\Users\\user\\Projects\\WebApp"}),
+    ("S3: Stop", "Stop.json", {"session_id": "session_3", "cwd": "C:\\Users\\user\\Projects\\DataPipeline"}),
 ]
 
 # ── 并行工具测试序列 ──────────────────────────────────────
@@ -197,6 +202,7 @@ PARALLEL_TOOLS_SEQUENCE = [
     ("PostToolBatch", "PostToolBatch.json", {
         "session_id": "parallel_test"
     }),
+    ("Stop", "Stop.json", {"session_id": "parallel_test"}),
 ]
 
 # ── 错误处理测试序列 ──────────────────────────────────────
@@ -241,6 +247,7 @@ ERROR_HANDLING_SEQUENCE = [
         "tool_use_id": "toolu_ERR_BASH2",
         "tool_response": {"interrupted": False}
     }),
+    ("Stop", "Stop.json", {"session_id": "error_test"}),
 ]
 
 
@@ -281,6 +288,7 @@ INTERRUPTED_SEQUENCE = [
         "tool_use_id": "toolu_INT_BASH2",
         "tool_response": {"interrupted": False}
     }),
+    ("Stop", "Stop.json", {"session_id": "interrupt_test"}),
 ]
 
 # ── Web 工具测试序列 ──────────────────────────────────────
@@ -326,6 +334,7 @@ WEB_TOOLS_SEQUENCE = [
         "tool_use_id": "toolu_WEB_READ1",
         "tool_response": {"interrupted": False}
     }),
+    ("Stop", "Stop.json", {"session_id": "web_test"}),
 ]
 
 # ── 长任务测试序列 ────────────────────────────────────────
@@ -401,6 +410,7 @@ LONG_TASK_SEQUENCE = [
         "tool_use_id": "toolu_LT_BASH", "tool_response": {"interrupted": False}
     }),
     ("PostToolBatch", "PostToolBatch.json", {"session_id": "long_task"}),
+    ("Stop", "Stop.json", {"session_id": "long_task"}),
 ]
 
 # ── 同一 Session 多轮对话序列 ─────────────────────────────
@@ -441,6 +451,7 @@ SESSION_RESTART_SEQUENCE = [
         "session_id": "restart_test", "tool_name": "Bash",
         "tool_use_id": "toolu_RS_B1", "tool_response": {"interrupted": False}
     }),
+    ("Turn3: Stop", "Stop.json", {"session_id": "restart_test"}),
 ]
 
 # ── 混合工具类型序列 ──────────────────────────────────────
@@ -491,6 +502,7 @@ MIXED_TOOLS_SEQUENCE = [
         "tool_use_id": "toolu_MX_B1", "tool_response": {"interrupted": False}
     }),
     ("PostToolBatch", "PostToolBatch.json", {"session_id": "mixed_test"}),
+    ("Stop", "Stop.json", {"session_id": "mixed_test"}),
 ]
 
 # ── 多 Session 同时出错序列 ───────────────────────────────
@@ -533,6 +545,7 @@ MULTI_SESSION_ERROR_SEQUENCE = [
     }),
     # S2 仍在错误状态，S1 完成
     ("S2: StopFailure", "StopFailure.json", {"session_id": "err_s2"}),
+    ("S1: Stop", "Stop.json", {"session_id": "err_s1"}),
 ]
 
 # ── 快速连续工具序列 ──────────────────────────────────────
@@ -557,6 +570,7 @@ RAPID_FIRE_SEQUENCE = [
     for i in range(1, 9)
 ] + [
     ("PostToolBatch", "PostToolBatch.json", {"session_id": "rapid_test"}),
+    ("Stop", "Stop.json", {"session_id": "rapid_test"}),
 ]
 
 # ── Subagent 嵌套序列 ─────────────────────────────────────
@@ -588,6 +602,7 @@ SUBAGENT_SEQUENCE = [
         "tool_use_id": "toolu_SA_B1", "tool_response": {"interrupted": False}
     }),
     ("Notification", "Notification.json", {"session_id": "subagent_test"}),
+    ("Stop", "Stop.json", {"session_id": "subagent_test"}),
 ]
 
 # ── GUI 主界面状态转换序列 ────────────────────────────────
@@ -608,6 +623,7 @@ GUI_FACE_TRANSITIONS_SEQUENCE = [
         "tool_use_id": "toolu_GF_B1", "tool_response": {"interrupted": False}
     }),
     ("S1: PostToolBatch", "PostToolBatch.json", {"session_id": "gui_face_s1"}),
+    ("S1: Stop(turn1→C)", "Stop.json", {"session_id": "gui_face_s1"}),
     # [期望] 脸=绿, 眼睛静止, S1圆点=绿, 消息块=绿 "Done"
     # 阶段3: 第二轮工作 → 再次蓝色
     ("S1: Turn2-UserPromptSubmit", "UserPromptSubmit.json", {
@@ -662,6 +678,7 @@ GUI_5SESSIONS_SEQUENCE = [
         "tool_use_id": "toolu_5S_G1", "tool_response": {"interrupted": False}
     }),
     ("S3: PostToolBatch", "PostToolBatch.json", {"session_id": "gui_5s_3"}),
+    ("S3: Stop(→C)", "Stop.json", {"session_id": "gui_5s_3"}),
     # S4: 工作中（蓝色圆点）
     ("S4: PreToolUse(WebSearch)", "PreToolUse.json", {
         "session_id": "gui_5s_4", "tool_name": "WebSearch",
@@ -736,6 +753,8 @@ GUI_PRIORITY_SEQUENCE = [
         "tool_use_id": "toolu_PR_B3", "tool_response": {"interrupted": False}
     }),
     ("S3: PostToolBatch", "PostToolBatch.json", {"session_id": "gui_prio_s3"}),
+    ("S1: Stop", "Stop.json", {"session_id": "gui_prio_s1"}),
+    ("S3: Stop", "Stop.json", {"session_id": "gui_prio_s3"}),
     # [期望] S1=C, S2=C, S3=C → 脸=绿, 消息块=绿 "S1: Done"
 ]
 
@@ -873,14 +892,16 @@ LONG_MESSAGE_SEQUENCE = [
         "tool_use_id": "toolu_LONG_WEB1",
         "tool_response": {"interrupted": False}
     }),
+    ("Stop", "Stop.json", {"session_id": "long_msg_test",
+                           "cwd": "C:\\Users\\user\\Projects\\MicroPython_Claude_Assistant"}),
 ]
 
 # ── 审批通知序列 ──────────────────────────────────────────
-# 验证 needs_approval=True 时设备显示 PENDING（黄色），审批完成后恢复
-# 注意：hook_bridge 立即返回 {}，审批由 Claude Code 终端完成
-#       设备端只做通知用，本序列验证 PENDING 状态的推送与恢复
+# v5 架构：P 状态由 Notification(permission_prompt) 触发（waiting++）
+#          waiting 由 stop/user_prompt 清零；tool_done 不清 waiting
+#          （hook_bridge 固定 needs_approval=False，PreToolUse 不再触发 P）
 APPROVAL_SEQUENCE = [
-    # 阶段1: 普通工具（无审批）→ 设备显示 WORKING（蓝色）
+    # 阶段1: 普通工具 → W 状态
     ("UserPromptSubmit", "UserPromptSubmit.json", {
         "session_id": "approval_test",
         "prompt": "Delete temp files and push to remote"
@@ -891,7 +912,7 @@ APPROVAL_SEQUENCE = [
         "tool_use_id": "toolu_AP_R1",
         "tool_input": {"file_path": "README.md"}
     }),
-    # [期望] 设备: WORKING 蓝色，消息块 "Read: README.md"
+    # [期望] W 状态
     ("PostToolUse(Read-safe)", "PostToolUse.json", {
         "session_id": "approval_test",
         "tool_name": "Read",
@@ -899,68 +920,94 @@ APPROVAL_SEQUENCE = [
         "tool_response": {"interrupted": False}
     }),
 
-    # 阶段2: 需要审批的 Bash 命令 → 设备显示 PENDING（黄色）
-    ("PreToolUse(Bash-critical)", "PreToolUse_critical_bash.json", {
+    # 阶段2: 高风险工具开始 → W，随后 Claude Code 发出审批通知 → P
+    ("PreToolUse(Bash-risky)", "PreToolUse.json", {
         "session_id": "approval_test",
         "tool_name": "Bash",
         "tool_use_id": "toolu_AP_B1",
         "tool_input": {"command": "rm -rf /tmp/build && git push --force"}
     }),
-    # [期望] 设备: PENDING 黄色，提醒用户去终端审批
-    # 模拟用户在终端批准（PostToolUse 表示工具已执行完成）
-    ("PostToolUse(Bash-critical-approved)", "PostToolUse.json", {
+    # [期望] W 状态（工具开始，审批通知尚未到达）
+    ("Notification(permission_prompt→P)", "Notification.json", {
+        "session_id": "approval_test",
+        "notification_type": "permission_prompt"
+    }),
+    # [期望] P 状态（waiting=1）
+    ("PostToolUse(Bash-approved)", "PostToolUse.json", {
         "session_id": "approval_test",
         "tool_name": "Bash",
         "tool_use_id": "toolu_AP_B1",
         "tool_response": {"interrupted": False}
     }),
-    # [期望] 设备: 恢复 IDLE（灰色）
+    # [期望] 仍 P（v5: tool_done 不清 waiting，waiting 由 stop 清零）
+    ("Stop(turn1完成→waiting清零)", "Stop.json", {
+        "session_id": "approval_test"
+    }),
+    # [期望] C 状态（waiting=0，completed_until 设置）
 
-    # 阶段3: 需要审批的 Write 操作 → 再次 PENDING
-    ("PreToolUse(Write-critical)", "PreToolUse_critical_write.json", {
+    # 阶段3: 高风险工具被拒绝 → E 状态
+    ("UserPromptSubmit(turn2)", "UserPromptSubmit.json", {
+        "session_id": "approval_test",
+        "prompt": "Try again with .env"
+    }),
+    ("PreToolUse(Write-risky)", "PreToolUse.json", {
         "session_id": "approval_test",
         "tool_name": "Write",
         "tool_use_id": "toolu_AP_W1",
         "tool_input": {"file_path": ".env"}
     }),
-    # [期望] 设备: PENDING 黄色
-    # 模拟用户在终端拒绝（PostToolUseFailure 表示工具被拒绝/失败）
+    ("Notification(permission_prompt)", "Notification.json", {
+        "session_id": "approval_test",
+        "notification_type": "permission_prompt"
+    }),
+    # [期望] P 状态
     ("PostToolUseFailure(Write-denied)", "PostToolUseFailure.json", {
         "session_id": "approval_test",
         "tool_name": "Write",
         "tool_use_id": "toolu_AP_W1",
         "error": "User denied the operation"
     }),
-    # [期望] 设备: ERROR 红色（工具失败），随后恢复 IDLE
+    # [期望] E 状态（tool_error 触发 dizzy，3s 后自动消）
 
-    # 阶段4: 多个审批工具并发 → PENDING 计数正确
-    ("PreToolUse(Bash-1)", "PreToolUse_critical_bash.json", {
+    # 阶段4: 两个工具并发，其中触发一次审批通知
+    ("UserPromptSubmit(turn3)", "UserPromptSubmit.json", {
+        "session_id": "approval_test",
+        "prompt": "Multiple ops"
+    }),
+    ("PreToolUse(Read-safe2)", "PreToolUse.json", {
+        "session_id": "approval_test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_AP_R2",
+        "tool_input": {"file_path": "config.py"}
+    }),
+    ("PreToolUse(Bash-risky2)", "PreToolUse.json", {
         "session_id": "approval_test",
         "tool_name": "Bash",
         "tool_use_id": "toolu_AP_B2",
         "tool_input": {"command": "git push --force origin main"}
     }),
-    ("PreToolUse(Edit-critical)", "PreToolUse_critical_edit.json", {
+    ("Notification(permission_prompt)", "Notification.json", {
         "session_id": "approval_test",
-        "tool_name": "Edit",
-        "tool_use_id": "toolu_AP_E1",
-        "tool_input": {"file_path": ".git/config"}
+        "notification_type": "permission_prompt"
     }),
-    # [期望] 设备: PENDING 黄色（waiting=2）
-    ("PostToolUse(Bash-1-done)", "PostToolUse.json", {
+    # [期望] P 状态（waiting=1，两个工具仍在运行）
+    ("PostToolUse(Read-done)", "PostToolUse.json", {
+        "session_id": "approval_test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_AP_R2",
+        "tool_response": {"interrupted": False}
+    }),
+    ("PostToolUse(Bash-done)", "PostToolUse.json", {
         "session_id": "approval_test",
         "tool_name": "Bash",
         "tool_use_id": "toolu_AP_B2",
         "tool_response": {"interrupted": False}
     }),
-    # [期望] 设备: 仍然 PENDING（waiting=1，还有 Edit 未完成）
-    ("PostToolUse(Edit-done)", "PostToolUse.json", {
-        "session_id": "approval_test",
-        "tool_name": "Edit",
-        "tool_use_id": "toolu_AP_E1",
-        "tool_response": {"interrupted": False}
+    # [期望] 仍 P（waiting 未清）
+    ("Stop(turn3完成→C)", "Stop.json", {
+        "session_id": "approval_test"
     }),
-    # [期望] 设备: 恢复 IDLE（waiting=0）
+    # [期望] C 状态（waiting=0）
 ]
 
 # ── 闹钟版语音测试序列（--clock）────────────────────────────
@@ -992,7 +1039,7 @@ CLOCK_SEQUENCE = [
         "tool_use_id": "toolu_CLK_R1",
         "tool_response": {"interrupted": False}
     }, 3.0),
-    ("S1: Stop(完成)", "PostToolBatch.json", {
+    ("S1: Stop(完成)", "Stop.json", {
         "session_id": "clock_s1",
         "cwd": "C:\\Projects\\danke_ai",
     }, 15.0),  # 等语音播完
@@ -1010,7 +1057,7 @@ CLOCK_SEQUENCE = [
         "tool_use_id": "toolu_CLK_B1",
         "tool_input": {"command": "pytest tests/"}
     }, 3.0),
-    ("S2: Stop(完成→触发)", "PostToolBatch.json", {
+    ("S2: Stop(完成→触发)", "Stop.json", {
         "session_id": "clock_s2",
         "cwd": "C:\\Projects\\danke_ai",
     }, 0.5),  # 故意快速，测试覆盖
@@ -1018,7 +1065,7 @@ CLOCK_SEQUENCE = [
         "session_id": "clock_s2",
         "cwd": "C:\\Projects\\danke_ai",
     }, 0.5),  # 故意快速
-    ("S2: Stop(再次完成→丢弃)", "PostToolBatch.json", {
+    ("S2: Stop(再次完成→丢弃)", "Stop.json", {
         "session_id": "clock_s2",
         "cwd": "C:\\Projects\\danke_ai",
     }, 15.0),  # 等语音播完
@@ -1048,6 +1095,12 @@ CLOCK_SEQUENCE = [
         "tool_response": {"interrupted": False}
     }, 5.0),
 
+    # 场景3 完成后 Stop → C 状态（waiting 由 stop 清零）
+    ("S3: Stop(审批完成)", "Stop.json", {
+        "session_id": "clock_s3",
+        "cwd": "C:\\Projects\\danke_ai",
+    }, 5.0),
+
     # ── 场景4：3 session 并发，只有一个 C ────────────────────
     ("S4a: UserPromptSubmit", "UserPromptSubmit.json", {
         "session_id": "clock_s4a",
@@ -1064,7 +1117,7 @@ CLOCK_SEQUENCE = [
         "cwd": "C:\\Projects\\proj_c",
         "prompt": "更新依赖"
     }, 5.0),
-    ("S4a: Stop(完成)", "PostToolBatch.json", {
+    ("S4a: Stop(完成)", "Stop.json", {
         "session_id": "clock_s4a",
         "cwd": "C:\\Projects\\proj_a",
     }, 15.0),
@@ -1072,7 +1125,7 @@ CLOCK_SEQUENCE = [
         "session_id": "clock_s4b",
         "cwd": "C:\\Projects\\proj_b",
     }, 15.0),
-    ("S4c: Stop(完成)", "PostToolBatch.json", {
+    ("S4c: Stop(完成)", "Stop.json", {
         "session_id": "clock_s4c",
         "cwd": "C:\\Projects\\proj_c",
     }, 5.0),
@@ -1094,6 +1147,7 @@ ALL_SEQUENCES = [
     (SUBAGENT_SEQUENCE,                "Subagent 嵌套测试"),
     (LONG_MESSAGE_SEQUENCE,            "长消息显示测试"),
     (APPROVAL_SEQUENCE,                "审批通知测试"),
+    (CLOCK_SEQUENCE,                   "闹钟版语音测试"),
     (GUI_FACE_TRANSITIONS_SEQUENCE,    "GUI 脸部状态转换测试"),
     (GUI_5SESSIONS_SEQUENCE,           "GUI 五 Session 并发测试"),
     (GUI_PRIORITY_SEQUENCE,            "GUI 消息块优先级测试"),

@@ -1,0 +1,7 @@
+{
+  "session_id": "SESSION-FIXTURE-0001",
+  "transcript_path": "C:\\Users\\user\\.claude\\projects\\C--Users-user-Desktop-claudehardware\\SESSION-FIXTURE-0001.jsonl",
+  "cwd": "C:\\Users\\user\\Desktop\\claudehardware\\MicroPython_Claude_Assistant",
+  "hook_event_name": "Stop",
+  "stop_reason": "end_turn"
+}
