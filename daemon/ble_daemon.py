@@ -262,7 +262,9 @@ async def _pusher_tick(last_pushed_wire):
                 if not s.tools
                 and not s.turn_active
                 and s.last_activity_ts > 0
-                and now - s.last_activity_ts > SESSION_CLEANUP_S]:
+                and now - s.last_activity_ts > SESSION_CLEANUP_S
+                and s.completed_until <= now
+                and s.dizzy_until <= now]:
         del _sessions[sid]
 
     # completed 到期标 dirty
