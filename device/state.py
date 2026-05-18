@@ -18,6 +18,13 @@ APPROVED  = 6   # 已批准：用户刚刚按下批准按钮（短暂覆盖）
 # 状态名称列表，下标与枚举对应，用于屏幕显示
 STATE_NAMES = ["sleep", "idle", "working", "pending", "celebrate", "error", "approved"]
 
+# ── wire 协议状态码 ───────────────────────────────────────────
+S_IDLE    = "I"
+S_WORKING = "W"
+S_PENDING = "P"
+S_DONE    = "C"
+S_ERROR   = "E"
+
 
 # ── 状态转换事件判断器 ─────────────────────────────────────────
 class StateEvent:
@@ -67,8 +74,8 @@ class StateEvent:
 
 def sess_state(sess) -> str:
     """将 SessionStatus 映射为 wire 状态码（E/P/W/C/I）"""
-    if sess.error:      return "E"
-    if sess.waiting:    return "P"
-    if sess.running:    return "W"
-    if sess.completed:  return "C"
-    return "I"
+    if sess.error:      return S_ERROR
+    if sess.waiting:    return S_PENDING
+    if sess.running:    return S_WORKING
+    if sess.completed:  return S_DONE
+    return S_IDLE

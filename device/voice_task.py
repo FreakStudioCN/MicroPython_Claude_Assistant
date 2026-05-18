@@ -6,7 +6,9 @@ except ImportError:
 import machine
 import config as cfg
 
-_EVENT_STATE = {"C": "done", "E": "error", "P": "pending", "connect": "connect", "disconnect": "disconnect", "startup": "startup"}
+from state import S_DONE, S_ERROR, S_PENDING
+
+_EVENT_STATE = {S_DONE: "done", S_ERROR: "error", S_PENDING: "pending", "connect": "connect", "disconnect": "disconnect", "startup": "startup"}
 
 
 class VoiceTask:
@@ -19,10 +21,10 @@ class VoiceTask:
             ws=machine.Pin(cfg.CLOCK_SPK_LRC),
             sd=machine.Pin(cfg.CLOCK_SPK_DIN),
             mode=machine.I2S.TX,
-            bits=16,
+            bits=cfg.I2S_BITS,
             format=machine.I2S.MONO,
-            rate=8000,
-            ibuf=4096,
+            rate=cfg.I2S_RATE,
+            ibuf=cfg.I2S_IBUF,
         )
 
     def is_busy(self) -> bool:
@@ -82,7 +84,7 @@ class VoiceTask:
         swriter = asyncio.StreamWriter(self._i2s)
         try:
             with open(path, "rb") as f:
-                buf = bytearray(1024)
+                buf = bytearray(cfg.I2S_READ_BUF)
                 while True:
                     n = f.readinto(buf)
                     if not n:

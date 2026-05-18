@@ -38,19 +38,21 @@ try:
 except ImportError:
     import json as ujson  # PC 端测试时回退到标准 json 库
 
+from state import S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
+
 
 class SessionStatus:
     """v4 wire 中单个 session 的状态（从 s 字段推导所有属性）。"""
     def __init__(self, d: dict):
-        s = d.get("s", "I")
+        s = d.get("s", S_IDLE)
         self.name        = d.get("n", "?")
-        self.running     = 1 if s == "W" else 0
-        self.waiting     = 1 if s == "P" else 0
-        self.completed   = s == "C"
-        self.error       = "!" if s == "E" else ""
+        self.running     = 1 if s == S_WORKING else 0
+        self.waiting     = 1 if s == S_PENDING else 0
+        self.completed   = s == S_DONE
+        self.error       = "!" if s == S_ERROR else ""
         self.interrupted = False
         self.msg         = d.get("m", "")
-        self.prompt      = {"tool": d.get("t", ""), "hint": d.get("h", ""), "id": ""} if s == "P" else None
+        self.prompt      = {"tool": d.get("t", ""), "hint": d.get("h", ""), "id": ""} if s == S_PENDING else None
 
 
 class MultiSessionMsg:

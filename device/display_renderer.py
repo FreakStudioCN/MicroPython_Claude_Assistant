@@ -22,7 +22,7 @@ import task_handler
 from micropython import const
 import config as cfg
 from character import ClaudeCharacter  # 换形象只改这一行
-from state import sess_state as _sess_state
+from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
 
 # ── 颜色常量 ──────────────────────────────────────────────────
 _C_TAB_IDLE  = lv.color_hex(0xCCCCCC)
@@ -61,22 +61,22 @@ DOTS_H       = const(30)
 MSG_H        = const(60)
 TAB_H        = const(52)
 TAB_W        = const(64)
-MAX_SESSIONS = const(5)
+MAX_SESSIONS = cfg.MAX_SESSIONS
 FACE_SIZE    = const(110)
 EYE_SIZE     = const(10)
 DOT_SIZE     = const(18)
 
 # 状态颜色查找表
-_DOT_COLORS   = {"W": _C_DOT_WORK,  "E": _C_DOT_ERR,  "C": _C_DOT_DONE,  "I": _C_DOT_IDLE,  "P": _C_DOT_PEND}
-_BLOCK_COLORS = {"W": _C_BG_NORMAL, "E": _C_BG_ERROR, "C": _C_BG_SUCCESS, "I": _C_BG_IDLE, "P": _C_BG_PENDING}
-_STATE_LABELS = {"W": "Working", "E": "Error", "C": "Done", "I": "Idle", "P": "Pending"}
+_DOT_COLORS   = {S_WORKING: _C_DOT_WORK, S_ERROR: _C_DOT_ERR, S_DONE: _C_DOT_DONE, S_IDLE: _C_DOT_IDLE, S_PENDING: _C_DOT_PEND}
+_BLOCK_COLORS = {S_WORKING: _C_BG_NORMAL, S_ERROR: _C_BG_ERROR, S_DONE: _C_BG_SUCCESS, S_IDLE: _C_BG_IDLE, S_PENDING: _C_BG_PENDING}
+_STATE_LABELS = {S_WORKING: "Working", S_ERROR: "Error", S_DONE: "Done", S_IDLE: "Idle", S_PENDING: "Pending"}
 
 def _dominant_state(sessions) -> str:
     states = [_sess_state(s) for s in sessions] if sessions else []
-    for s in ("E", "W", "C"):
+    for s in (S_ERROR, S_WORKING, S_DONE):
         if s in states:
             return s
-    return "I"
+    return S_IDLE
 
 
 class DisplayRenderer:
@@ -94,7 +94,7 @@ class DisplayRenderer:
         self._character    = ClaudeCharacter()
         self._logo_timer   = None
         self._logo_frame   = 0
-        self._logo_state   = "I"
+        self._logo_state   = S_IDLE
         self._session_dots = []
         self._msg_block    = None
         self._msg_label    = None
@@ -391,13 +391,13 @@ class DisplayRenderer:
 
         # session 圆点
         for i, dot in enumerate(self._session_dots):
-            s = _sess_state(self._sessions[i]) if i < len(self._sessions) else "I"
+            s = _sess_state(self._sessions[i]) if i < len(self._sessions) else S_IDLE
             dot.set_style_bg_color(_DOT_COLORS[s], lv.PART.MAIN)
 
         # 消息块：取优先级最高的 session
         active_sess = None
         active_idx  = 0
-        for priority in ("E", "W", "C", "I"):
+        for priority in (S_ERROR, S_WORKING, S_DONE, S_IDLE):
             for i, s in enumerate(self._sessions):
                 if _sess_state(s) == priority:
                     active_sess = s
@@ -440,11 +440,10 @@ class DisplayRenderer:
             return
         state     = _sess_state(sess)
         tool_text = self._short_tool(index, sess)
-        color_map = {"E": _C_TAB_ERR, "W": _C_TAB_WORK, "C": _C_TAB_CELE}
+        color_map = {S_ERROR: _C_TAB_ERR, S_WORKING: _C_TAB_WORK, S_DONE: _C_TAB_CELE}
         btn.set_style_bg_color(color_map.get(state, _C_TAB_IDLE), lv.PART.MAIN)
-        # 使用 sess.name 显示项目名，状态活跃时显示工具名
-        lbl.set_text(tool_text if state in ("E", "W", "C") else sess.name)
-        if state == "E":
+        lbl.set_text(tool_text if state in (S_ERROR, S_WORKING, S_DONE) else sess.name)
+        if state == S_ERROR:
             self._start_blink(index)
         else:
             self._stop_blink(index)
@@ -464,7 +463,7 @@ class DisplayRenderer:
             return
 
         history.append(record)
-        if len(history) > 20:
+        if len(history) > cfg.HISTORY_MAX_LEN:
             history.pop(0)
             c = self._containers[index]
             if c.get_child_count() > 0:
@@ -503,7 +502,7 @@ class DisplayRenderer:
         if self._blink_tasks[index] is not None:
             self._blink_tasks[index].cancel()
             self._blink_tasks[index] = None
-        if index < len(self._sessions) and self._sessions[index] and _sess_state(self._sessions[index]) == "E":
+        if index < len(self._sessions) and self._sessions[index] and _sess_state(self._sessions[index]) == S_ERROR:
             self._tab_btns[index].set_style_bg_color(_C_TAB_ERR, lv.PART.MAIN)
 
     async def _blink_loop(self, index: int):
@@ -513,7 +512,7 @@ class DisplayRenderer:
             while True:
                 btn.set_style_bg_color(_C_TAB_ERR2 if toggle else _C_TAB_ERR, lv.PART.MAIN)
                 toggle = not toggle
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(cfg.BLINK_INTERVAL_S)
         except asyncio.CancelledError:
             pass
 

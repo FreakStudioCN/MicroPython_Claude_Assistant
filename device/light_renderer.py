@@ -22,18 +22,17 @@ import machine
 import neopixel
 import config as cfg
 from voice_task import VoiceTask
-from state import sess_state as _sess_state
+from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
 
 # 状态优先级：多 session 时取最高优先级
-_PRIORITY = {"E": 0, "P": 1, "W": 2, "C": 3, "I": 4}
+_PRIORITY = {S_ERROR: 0, S_PENDING: 1, S_WORKING: 2, S_DONE: 3, S_IDLE: 4}
 
-# 历史记录条目：{"name", "state", "msg"}
-_STATE_LABEL = {"I": "空闲", "W": "工作中", "P": "等待审批", "C": "完成", "E": "出错"}
+_STATE_LABEL = {S_IDLE: "空闲", S_WORKING: "工作中", S_PENDING: "等待审批", S_DONE: "完成", S_ERROR: "出错"}
 
 
 def _dominant(sessions) -> str:
     if not sessions:
-        return "I"
+        return S_IDLE
     return min((_sess_state(s) for s in sessions), key=lambda s: _PRIORITY[s])
 
 
@@ -48,7 +47,7 @@ class LightRenderer:
         self._history: list[dict] = []
 
         self._frame = 0
-        self._state = "I"
+        self._state = S_IDLE
         self._state_frame = 0
         self._connect_flash = 0
         self._disconnect_fade = 0
@@ -93,7 +92,7 @@ class LightRenderer:
                 label = _STATE_LABEL.get(cur, cur)
                 print(f"[light] sess={sess.name} {prev} → {cur}({label}) msg={sess.msg or ''!r}")
                 self._push_history(sess, cur)
-                if cur in ("C", "E", "P"):
+                if cur in (S_DONE, S_ERROR, S_PENDING):
                     await self._voice.trigger(self._history, sess, cur)
                     if cur not in self._state_queue:
                         self._state_queue.append(cur)
@@ -102,13 +101,13 @@ class LightRenderer:
 
         # 偶发播报
         dom = _dominant(self._sessions)
-        if dom == "W" and time.time() >= self._idle_speak_deadline:
+        if dom == S_WORKING and time.time() >= self._idle_speak_deadline:
             await self._voice.maybe_idle_speak(self._history)
             self._idle_speak_deadline = self._next_idle_deadline()
 
         # 队列空时才更新背景状态（W/I）
         if not self._state_queue:
-            bg = dom if dom in ("W", "I") else "I"
+            bg = dom if dom in (S_WORKING, S_IDLE) else S_IDLE
             if bg != self._state:
                 sess_info = " | ".join(
                     f"{s.name}:{_sess_state(s)}" for s in self._sessions
@@ -124,7 +123,7 @@ class LightRenderer:
         self._sessions = []
         self._state_queue.clear()
         self._prev_states.clear()
-        self._state = "I"
+        self._state = S_IDLE
         self._state_frame = self._frame
         asyncio.create_task(self._voice.trigger([], None, "connect", force=True))
 
@@ -135,7 +134,7 @@ class LightRenderer:
         self._sessions = []
         self._state_queue.clear()
         self._prev_states.clear()
-        self._state = "I"
+        self._state = S_IDLE
         self._state_frame = self._frame
         asyncio.create_task(self._disconnect_speak_loop())
 
@@ -147,7 +146,7 @@ class LightRenderer:
             await asyncio.sleep(10)
 
     # ── 灯光帧驱动 ────────────────────────────────────────────
-    _MIN_FRAMES = 20  # 每个队列状态最少显示帧数（20帧×50ms=1s）
+    _MIN_FRAMES = cfg.LIGHT_MIN_QUEUE_FRAMES
 
     def _tick_leds(self):
         self._frame += 1
@@ -171,7 +170,7 @@ class LightRenderer:
             self._disconnect_fade -= 1
             self._set_all(v // 3, v, 0)
             if self._disconnect_fade == 0:
-                self._state = "I"
+                self._state = S_IDLE
                 self._state_frame = self._frame
             return
 
@@ -196,11 +195,11 @@ class LightRenderer:
         s = self._state
         f = self._frame - self._state_frame
 
-        if s == "I":
+        if s == S_IDLE:
             v = int((math.sin(f * math.pi / 30) + 1) / 2 * 40)
             self._set_all(0, 0, v)  # 蓝色 GRB=(0,0,B)
 
-        elif s == "W":
+        elif s == S_WORKING:
             if (f // 6) % 2 == 0:
                 self._np[0] = (100, 0, 128)   # 青色 GRB=(G,R,B)
                 self._np[1] = (15, 0, 20)
@@ -209,12 +208,12 @@ class LightRenderer:
                 self._np[1] = (100, 0, 128)
             self._np.write()
 
-        elif s == "P":
+        elif s == S_PENDING:
             on = (f % 24) < 16
             c = (100, 128, 0) if on else (0, 0, 0)  # 黄色 GRB=(G,R,B)
             self._set_all(*c)
 
-        elif s == "C":
+        elif s == S_DONE:
             if f < 18:
                 on = (f % 6) < 3
                 c = (128, 0, 40) if on else (0, 0, 0)  # 绿色 GRB=(G,R,B)
@@ -223,7 +222,7 @@ class LightRenderer:
                 v = int((math.sin(f * math.pi / 30) + 1) / 2 * 30)
                 self._set_all(v, 0, 0)  # 绿色呼吸
 
-        elif s == "E":
+        elif s == S_ERROR:
             if (f // 2) % 2 == 0:
                 self._np[0] = (0, 128, 0)   # 红色 GRB=(0,R,0)
                 self._np[1] = (0, 0, 0)

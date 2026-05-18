@@ -81,3 +81,22 @@ VOICE_HISTORY_DEPTH = 10
 VOICE_IDLE_MIN_S    = 90
 VOICE_IDLE_MAX_S    = 180
 
+# ── BLE 传输参数 ──────────────────────────────────────────────
+BLE_ADV_TIMEOUT_US  = 250_000
+BLE_RECV_TIMEOUT_MS = 200
+BLE_CHUNK_SIZE      = 20
+
+# ── I2S 音频参数 ──────────────────────────────────────────────
+I2S_BITS        = 16
+I2S_RATE        = 8000
+I2S_IBUF        = 4096
+I2S_READ_BUF    = 1024
+
+# ── 灯光渲染参数 ──────────────────────────────────────────────
+LIGHT_MIN_QUEUE_FRAMES = 20   # 队列状态最少显示帧数（×50ms）
+
+# ── 显示渲染参数 ──────────────────────────────────────────────
+MAX_SESSIONS        = 5
+HISTORY_MAX_LEN     = 20
+BLINK_INTERVAL_S    = 0.4
+

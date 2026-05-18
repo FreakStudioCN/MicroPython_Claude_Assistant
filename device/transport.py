@@ -17,7 +17,7 @@ class Transport:
 import bluetooth
 import aioble
 import time
-from config import BLE_NAME, NUS_SERVICE, NUS_RX, NUS_TX
+from config import BLE_NAME, NUS_SERVICE, NUS_RX, NUS_TX, BLE_ADV_TIMEOUT_US, BLE_RECV_TIMEOUT_MS, BLE_CHUNK_SIZE
 
 # GATT 服务与特征注册（模块导入时执行，全局唯一）
 _svc = aioble.Service(bluetooth.UUID(NUS_SERVICE))
@@ -41,7 +41,7 @@ class BleTransport(Transport):
         self._buf = b""
         print(f"[ble] advertising... t={time.time()}")
         self._conn = await aioble.advertise(
-            250_000,
+            BLE_ADV_TIMEOUT_US,
             name=BLE_NAME,
             services=[bluetooth.UUID(NUS_SERVICE)],
         )
@@ -52,7 +52,7 @@ class BleTransport(Transport):
         chunks = 0
         while True:
             try:
-                conn, data = await _rx.written(timeout_ms=200)
+                conn, data = await _rx.written(timeout_ms=BLE_RECV_TIMEOUT_MS)
             except Exception:
                 if not self.connected():
                     raise OSError("BLE disconnected")
@@ -70,9 +70,9 @@ class BleTransport(Transport):
             print("[ble] send skipped: not connected")
             return
         data = msg.encode()
-        print(f"[ble] send t={time.time()} total={len(data)}B chunks={(len(data)+19)//20}")
-        for i in range(0, len(data), 20):
-            chunk = data[i:i+20]
+        print(f"[ble] send t={time.time()} total={len(data)}B chunks={(len(data)+BLE_CHUNK_SIZE-1)//BLE_CHUNK_SIZE}")
+        for i in range(0, len(data), BLE_CHUNK_SIZE):
+            chunk = data[i:i+BLE_CHUNK_SIZE]
             print(f"[ble] send chunk {i//20}: {chunk}")
             _tx.notify(self._conn, chunk)
 
