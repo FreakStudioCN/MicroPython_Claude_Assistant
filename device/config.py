@@ -93,7 +93,27 @@ I2S_IBUF        = 4096
 I2S_READ_BUF    = 1024
 
 # ── 灯光渲染参数 ──────────────────────────────────────────────
-LIGHT_MIN_QUEUE_FRAMES = 20   # 队列状态最少显示帧数（×50ms）
+LIGHT_MIN_QUEUE_FRAMES  = 20   # 队列状态最少显示帧数（×50ms）
+LIGHT_RAINBOW_FRAMES    = 60   # 启动彩虹动画帧数
+LIGHT_CONNECT_FRAMES    = 30   # 连接白闪帧数
+LIGHT_DISCONNECT_FRAMES = 30   # 断线淡出帧数
+LIGHT_CONNECT_BRIGHTNESS = 80  # 连接白闪亮度
+
+LIGHT_IDLE_PERIOD   = 30   # 空闲呼吸 sin 周期（帧）
+LIGHT_IDLE_MAX_V    = 40   # 空闲蓝色最大亮度
+
+LIGHT_WORK_PERIOD   = 6    # 工作流水切换周期（帧）
+
+LIGHT_PEND_PERIOD   = 24   # 待审批闪烁周期（帧）
+LIGHT_PEND_ON       = 16   # 待审批亮帧数
+
+LIGHT_DONE_FLASH_FRAMES = 18   # 完成快闪持续帧数
+LIGHT_DONE_FLASH_PERIOD = 6    # 完成快闪周期（帧）
+LIGHT_DONE_FLASH_ON     = 3    # 完成快闪亮帧数
+LIGHT_DONE_PERIOD       = 30   # 完成呼吸 sin 周期（帧）
+LIGHT_DONE_MAX_V        = 30   # 完成绿色最大亮度
+
+LIGHT_ERR_PERIOD    = 2    # 出错交替周期（帧）
 
 # ── 显示渲染参数 ──────────────────────────────────────────────
 MAX_SESSIONS        = 5
