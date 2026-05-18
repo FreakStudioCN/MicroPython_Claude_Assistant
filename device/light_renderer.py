@@ -22,6 +22,7 @@ import machine
 import neopixel
 import config as cfg
 from voice_task import VoiceTask
+from state import sess_state as _sess_state
 
 # 状态优先级：多 session 时取最高优先级
 _PRIORITY = {"E": 0, "P": 1, "W": 2, "C": 3, "I": 4}
@@ -34,14 +35,6 @@ def _dominant(sessions) -> str:
     if not sessions:
         return "I"
     return min((_sess_state(s) for s in sessions), key=lambda s: _PRIORITY[s])
-
-
-def _sess_state(sess) -> str:
-    if sess.error:    return "E"
-    if sess.waiting:  return "P"
-    if sess.running:  return "W"
-    if sess.completed: return "C"
-    return "I"
 
 
 class LightRenderer:

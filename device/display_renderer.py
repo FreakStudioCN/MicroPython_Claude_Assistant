@@ -22,6 +22,7 @@ import task_handler
 from micropython import const
 import config as cfg
 from character import ClaudeCharacter  # 换形象只改这一行
+from state import sess_state as _sess_state
 
 # ── 颜色常量 ──────────────────────────────────────────────────
 _C_TAB_IDLE  = lv.color_hex(0xCCCCCC)
@@ -69,18 +70,6 @@ DOT_SIZE     = const(18)
 _DOT_COLORS   = {"W": _C_DOT_WORK,  "E": _C_DOT_ERR,  "C": _C_DOT_DONE,  "I": _C_DOT_IDLE,  "P": _C_DOT_PEND}
 _BLOCK_COLORS = {"W": _C_BG_NORMAL, "E": _C_BG_ERROR, "C": _C_BG_SUCCESS, "I": _C_BG_IDLE, "P": _C_BG_PENDING}
 _STATE_LABELS = {"W": "Working", "E": "Error", "C": "Done", "I": "Idle", "P": "Pending"}
-
-def _sess_state(sess) -> str:
-    if sess.error:
-        return "E"
-    if sess.completed:
-        return "C"
-    if sess.waiting:
-        return "P"
-    if sess.running:
-        return "W"
-    return "I"
-
 
 def _dominant_state(sessions) -> str:
     states = [_sess_state(s) for s in sessions] if sessions else []

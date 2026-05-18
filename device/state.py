@@ -63,3 +63,12 @@ class StateEvent:
     def is_idle(msg) -> bool:
         """判断是否完全空闲（无运行、无等待）"""
         return msg.running == 0 and msg.waiting == 0
+
+
+def sess_state(sess) -> str:
+    """将 SessionStatus 映射为 wire 状态码（E/P/W/C/I）"""
+    if sess.error:      return "E"
+    if sess.waiting:    return "P"
+    if sess.running:    return "W"
+    if sess.completed:  return "C"
+    return "I"
