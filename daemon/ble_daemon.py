@@ -177,8 +177,10 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
     if sess.waiting > 0:
         result["s"] = "P"
         return result
-    # 真实活动优先于"庆祝"：新 turn 已经在跑工具/等审批时，C 不应该继续遮挡 m 字段。
-    # 普通 stop→C 路径不受影响——stop 自己清了 tools/waiting，所以走到下面 C 检查仍命中。
+    # tools 优先：工具运行时把工具名带在 m 里（panel 形态显示用）。
+    # 必须在 turn_active 分支之前，否则 turn_active=True + tools 非空时
+    # 提前 return W{无 m}，panel 文字栏看不到当前工具，是 v0.9 前的回归。
+    # 同时也必须优先于 C：新 turn 已经在跑工具时，旧 turn 的庆祝不能遮挡真实活动。
     for t in sess.tools.values():
         if t["status"] == "running":
             summary = t.get("summary", "")[:50]

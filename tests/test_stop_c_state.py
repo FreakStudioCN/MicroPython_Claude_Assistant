@@ -558,9 +558,10 @@ async def test_turn_active_w_keeps_tool_message():
 
     场景：user_prompt 后紧跟 tool_start（很常见——Claude 收到 prompt 立刻调工具）。
     预期：wire 是 {"s":"W","m":"Read: file.py"}
-    当前行为（有 bug）：_session_to_wire 把 turn_active 分支放在 tools 循环之前
-        （ble_daemon.py:182-185），提前 return {"s":"W"} 不带 m，
-        设备只看到 "Working" 不知道在干啥（panel 形态文字栏空了）。
+    fix 前：_session_to_wire 把 turn_active 分支放在 tools 循环之前，
+        提前 return {"s":"W"} 不带 m，panel 形态文字栏看不到当前工具名。
+        这是 upstream 3e75390 "turn_active 标志修复思考阶段 W 状态缺失"
+        引入的回归——加 turn_active 分支时没考虑顺序。
 
     修复方向：交换 turn_active 和 tools 检查的顺序——tools 优先。
     """
@@ -747,7 +748,7 @@ async def main():
         ("test_stop_without_prior_error",             test_stop_without_prior_error),
         ("test_session_end_fallback_completion",      test_session_end_fallback_completion),
         ("test_session_end_after_stop_ignored",       test_session_end_after_stop_ignored),
-        # 以下两个用例在 bug 修复前预期失败
+        # 以下六个用例在 bug 修复前预期失败
         ("[BUG] test_cleanup_respects_completed_until",  test_cleanup_respects_completed_until),
         ("[BUG] test_stop_c_after_long_thinking",     test_stop_c_after_long_thinking),
         ("[BUG] test_turn_active_w_keeps_tool_message",  test_turn_active_w_keeps_tool_message),

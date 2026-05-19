@@ -49,10 +49,10 @@ class VoiceTask:
         else:
             self._current = asyncio.create_task(self._play_and_drain(state))
 
-    async def maybe_idle_speak(self, history: list):
+    async def maybe_idle_speak(self, history: list, state: str = "working"):
         if self.is_busy() or self._queue:
             return
-        self._current = asyncio.create_task(self._play_and_drain("working"))
+        self._current = asyncio.create_task(self._play_and_drain(state))
 
     async def _play_and_drain(self, state: str):
         await self._play_state(state)

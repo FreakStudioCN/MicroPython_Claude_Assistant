@@ -21,12 +21,14 @@
 
 - **daemon/**：PC 端守护进程（BLE 桥接、状态机、5Hz 推送）
 - **device/**：ESP32 固件（BLE 通信、灯光/语音/屏幕渲染，纯展示，无审批）
+  - `state.py`：wire 状态码常量（`S_IDLE/S_WORKING/S_PENDING/S_DONE/S_ERROR`）+ `sess_state()` + 状态转换逻辑
+  - `config.py`：所有可调参数（引脚、BLE、I2S、灯光帧数/时间、显示参数）
 - **scripts/**：烧录、TTS生成、集成测试工具；图片资源在 `scripts/assets/`
 - **tests/**：单元测试和集成测试
 
 ## 注意事项
 
-- `device/config.py` 由 `scripts/flash_device.py` 烧录时自动生成，**不要手动修改**
+- `device/config.py` 中的 `VARIANT` 和 `BLE_NAME` 两个字段由 `scripts/flash_device.py` 烧录时自动注入，**不要手动修改这两个字段**；其余常量（引脚、灯光参数等）可以手动修改
 - `device/assets/` 下的 PCM 文件是 `gen_voice_assets.py` 的生成产物，不要手动编辑
 - 用户自定义入口：语音音色 → `gen_voice_assets.py`；面板角色 → `device/character.py`；Logo → `scripts/logo_converter.py`；行为参数 → `device/config.py`
 

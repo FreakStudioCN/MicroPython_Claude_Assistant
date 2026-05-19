@@ -52,7 +52,7 @@ class LightRenderer:
         self._connect_flash = 0
         self._disconnect_fade = 0
         self._disconnect_loop = False
-        self._rainbow_frames = 60
+        self._rainbow_frames = cfg.LIGHT_RAINBOW_FRAMES
 
         # C/E/P 状态队列，每项最少显示 MIN_FRAMES 帧后出队
         self._state_queue: list = []
@@ -60,6 +60,7 @@ class LightRenderer:
         self._log_queue: list = []  # ISR→asyncio 日志缓冲
 
         # 偶发播报计时
+        self._work_speak_deadline = self._next_work_deadline()
         self._idle_speak_deadline = self._next_idle_deadline()
 
     # ── 公共接口 ──────────────────────────────────────────────
@@ -73,8 +74,7 @@ class LightRenderer:
         self._timer.init(period=50, mode=machine.Timer.PERIODIC, callback=lambda _: self._tick_leds())
         print(f"[light] NeoPixel ready: pin={cfg.CLOCK_LED_PIN} count={cfg.CLOCK_LED_COUNT}")
         self._disconnect_loop = True
-        self._disconnect_fade = 30
-        asyncio.create_task(self._voice.trigger([], None, "startup"))
+        self._disconnect_fade = cfg.LIGHT_DISCONNECT_FRAMES
         asyncio.create_task(self._disconnect_speak_loop())
 
     async def render(self, msg):
@@ -101,13 +101,17 @@ class LightRenderer:
 
         # 偶发播报
         dom = _dominant(self._sessions)
-        if dom == S_WORKING and time.time() >= self._idle_speak_deadline:
+        now = time.time()
+        if dom == S_WORKING and now >= self._work_speak_deadline:
             await self._voice.maybe_idle_speak(self._history)
+            self._work_speak_deadline = self._next_work_deadline()
+        elif dom == S_IDLE and now >= self._idle_speak_deadline:
+            await self._voice.maybe_idle_speak(self._history, "idle")
             self._idle_speak_deadline = self._next_idle_deadline()
 
         # 队列空时才更新背景状态（W/I）
         if not self._state_queue:
-            bg = dom if dom in (S_WORKING, S_IDLE) else S_IDLE
+            bg = dom if dom in (S_WORKING, S_IDLE, S_PENDING) else S_IDLE
             if bg != self._state:
                 sess_info = " | ".join(
                     f"{s.name}:{_sess_state(s)}" for s in self._sessions
@@ -118,19 +122,20 @@ class LightRenderer:
 
     async def on_connect(self):
         print("[light] on_connect: flash=10, clearing sessions/queue/prev_states")
-        self._connect_flash = 30
+        self._connect_flash = cfg.LIGHT_CONNECT_FRAMES
         self._disconnect_loop = False
         self._sessions = []
         self._state_queue.clear()
         self._prev_states.clear()
         self._state = S_IDLE
         self._state_frame = self._frame
+        self._work_speak_deadline = self._next_work_deadline()
+        self._idle_speak_deadline = self._next_idle_deadline()
         asyncio.create_task(self._voice.trigger([], None, "connect", force=True))
 
     async def on_disconnect(self):
         print(f"[light] on_disconnect: fade=10, state was={self._state}, queue={self._state_queue}")
-        self._disconnect_fade = 30
-        self._disconnect_loop = True
+        self._disconnect_fade = cfg.LIGHT_DISCONNECT_FRAMES
         self._sessions = []
         self._state_queue.clear()
         self._prev_states.clear()
@@ -162,7 +167,7 @@ class LightRenderer:
 
         if self._connect_flash > 0:
             self._connect_flash -= 1
-            self._set_all(80, 80, 80)
+            self._set_all(cfg.LIGHT_CONNECT_BRIGHTNESS, cfg.LIGHT_CONNECT_BRIGHTNESS, cfg.LIGHT_CONNECT_BRIGHTNESS)
             return
 
         if self._disconnect_fade > 0:
@@ -196,12 +201,12 @@ class LightRenderer:
         f = self._frame - self._state_frame
 
         if s == S_IDLE:
-            v = int((math.sin(f * math.pi / 30) + 1) / 2 * 40)
-            self._set_all(0, 0, v)  # 蓝色 GRB=(0,0,B)
+            v = int((math.sin(f * math.pi / cfg.LIGHT_IDLE_PERIOD) + 1) / 2 * cfg.LIGHT_IDLE_MAX_V)
+            self._set_all(0, 0, v)
 
         elif s == S_WORKING:
-            if (f // 6) % 2 == 0:
-                self._np[0] = (100, 0, 128)   # 青色 GRB=(G,R,B)
+            if (f // cfg.LIGHT_WORK_PERIOD) % 2 == 0:
+                self._np[0] = (100, 0, 128)
                 self._np[1] = (15, 0, 20)
             else:
                 self._np[0] = (15, 0, 20)
@@ -209,22 +214,22 @@ class LightRenderer:
             self._np.write()
 
         elif s == S_PENDING:
-            on = (f % 24) < 16
-            c = (100, 128, 0) if on else (0, 0, 0)  # 黄色 GRB=(G,R,B)
+            on = (f % cfg.LIGHT_PEND_PERIOD) < cfg.LIGHT_PEND_ON
+            c = (100, 128, 0) if on else (0, 0, 0)
             self._set_all(*c)
 
         elif s == S_DONE:
-            if f < 18:
-                on = (f % 6) < 3
-                c = (128, 0, 40) if on else (0, 0, 0)  # 绿色 GRB=(G,R,B)
+            if f < cfg.LIGHT_DONE_FLASH_FRAMES:
+                on = (f % cfg.LIGHT_DONE_FLASH_PERIOD) < cfg.LIGHT_DONE_FLASH_ON
+                c = (128, 0, 40) if on else (0, 0, 0)
                 self._set_all(*c)
             else:
-                v = int((math.sin(f * math.pi / 30) + 1) / 2 * 30)
-                self._set_all(v, 0, 0)  # 绿色呼吸
+                v = int((math.sin(f * math.pi / cfg.LIGHT_DONE_PERIOD) + 1) / 2 * cfg.LIGHT_DONE_MAX_V)
+                self._set_all(v, 0, 0)
 
         elif s == S_ERROR:
-            if (f // 2) % 2 == 0:
-                self._np[0] = (0, 128, 0)   # 红色 GRB=(0,R,0)
+            if (f // cfg.LIGHT_ERR_PERIOD) % 2 == 0:
+                self._np[0] = (0, 128, 0)
                 self._np[1] = (0, 0, 0)
             else:
                 self._np[0] = (0, 0, 0)
@@ -258,6 +263,12 @@ class LightRenderer:
         })
         if len(self._history) > cfg.VOICE_HISTORY_DEPTH:
             self._history.pop(0)
+
+    @staticmethod
+    def _next_work_deadline() -> int:
+        import urandom
+        span = cfg.VOICE_WORK_MAX_S - cfg.VOICE_WORK_MIN_S
+        return time.time() + cfg.VOICE_WORK_MIN_S + (urandom.getrandbits(8) * span // 256)
 
     @staticmethod
     def _next_idle_deadline() -> int:
