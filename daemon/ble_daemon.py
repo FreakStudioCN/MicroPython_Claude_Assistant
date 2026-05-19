@@ -179,10 +179,9 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
     if sess.waiting > 0:
         result["s"] = "P"
         return result
-    # turn_active：user_prompt 到 stop 之间，无工具时也显示 W（思考中 / 处理结果中）
-    if sess.turn_active:
-        result["s"] = "W"
-        return result
+    # tools 优先：工具运行时把工具名带在 m 里（panel 形态显示用）。
+    # 必须在 turn_active 分支之前，否则 turn_active=True + tools 非空时
+    # 提前 return W{无 m}，panel 文字栏看不到当前工具，是 v0.9 前的回归。
     for t in sess.tools.values():
         if t["status"] == "running":
             summary = t.get("summary", "")[:50]
@@ -190,6 +189,10 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
             result["s"] = "W"
             result["m"] = m[:60]
             return result
+    # turn_active：user_prompt 到 stop 之间、且当前无工具运行 → W（思考中 / 处理结果中）
+    if sess.turn_active:
+        result["s"] = "W"
+        return result
     # 快速工具保证：tool_start后400ms内至少显示一次W
     if sess.last_tool_start_ts > 0 and (now - sess.last_tool_start_ts) < 0.4:
         result["s"] = "W"
