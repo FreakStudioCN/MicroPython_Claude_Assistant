@@ -78,8 +78,10 @@ CLOCK_AMP_SD_PIN   = 5   # 关断 / 静音控制
 
 VOICE_ASSETS_DIR    = "/assets"
 VOICE_HISTORY_DEPTH = 10
-VOICE_IDLE_MIN_S    = 90
-VOICE_IDLE_MAX_S    = 180
+VOICE_WORK_MIN_S    = 20    # 工作中偶发播报最短间隔（秒）
+VOICE_WORK_MAX_S    = 60    # 工作中偶发播报最长间隔（秒）
+VOICE_IDLE_MIN_S    = 20    # 空闲偶发播报最短间隔（秒）
+VOICE_IDLE_MAX_S    = 60    # 空闲偶发播报最长间隔（秒）
 
 # ── BLE 传输参数 ──────────────────────────────────────────────
 BLE_ADV_TIMEOUT_US  = 250_000

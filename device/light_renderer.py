@@ -60,6 +60,7 @@ class LightRenderer:
         self._log_queue: list = []  # ISR→asyncio 日志缓冲
 
         # 偶发播报计时
+        self._work_speak_deadline = self._next_work_deadline()
         self._idle_speak_deadline = self._next_idle_deadline()
 
     # ── 公共接口 ──────────────────────────────────────────────
@@ -100,13 +101,17 @@ class LightRenderer:
 
         # 偶发播报
         dom = _dominant(self._sessions)
-        if dom == S_WORKING and time.time() >= self._idle_speak_deadline:
+        now = time.time()
+        if dom == S_WORKING and now >= self._work_speak_deadline:
             await self._voice.maybe_idle_speak(self._history)
+            self._work_speak_deadline = self._next_work_deadline()
+        elif dom == S_IDLE and now >= self._idle_speak_deadline:
+            await self._voice.maybe_idle_speak(self._history, "idle")
             self._idle_speak_deadline = self._next_idle_deadline()
 
         # 队列空时才更新背景状态（W/I）
         if not self._state_queue:
-            bg = dom if dom in (S_WORKING, S_IDLE) else S_IDLE
+            bg = dom if dom in (S_WORKING, S_IDLE, S_PENDING) else S_IDLE
             if bg != self._state:
                 sess_info = " | ".join(
                     f"{s.name}:{_sess_state(s)}" for s in self._sessions
@@ -124,6 +129,8 @@ class LightRenderer:
         self._prev_states.clear()
         self._state = S_IDLE
         self._state_frame = self._frame
+        self._work_speak_deadline = self._next_work_deadline()
+        self._idle_speak_deadline = self._next_idle_deadline()
         asyncio.create_task(self._voice.trigger([], None, "connect", force=True))
 
     async def on_disconnect(self):
@@ -256,6 +263,12 @@ class LightRenderer:
         })
         if len(self._history) > cfg.VOICE_HISTORY_DEPTH:
             self._history.pop(0)
+
+    @staticmethod
+    def _next_work_deadline() -> int:
+        import urandom
+        span = cfg.VOICE_WORK_MAX_S - cfg.VOICE_WORK_MIN_S
+        return time.time() + cfg.VOICE_WORK_MIN_S + (urandom.getrandbits(8) * span // 256)
 
     @staticmethod
     def _next_idle_deadline() -> int:
