@@ -173,16 +173,11 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
     if sess.dizzy_until > now:
         result["s"] = "E"
         return result
-    if sess.completed_until > now:
-        result["s"] = "C"
-        return result
     if sess.waiting > 0:
         result["s"] = "P"
         return result
-    # turn_active：user_prompt 到 stop 之间，无工具时也显示 W（思考中 / 处理结果中）
-    if sess.turn_active:
-        result["s"] = "W"
-        return result
+    # 真实活动优先于"庆祝"：新 turn 已经在跑工具/等审批时，C 不应该继续遮挡 m 字段。
+    # 普通 stop→C 路径不受影响——stop 自己清了 tools/waiting，所以走到下面 C 检查仍命中。
     for t in sess.tools.values():
         if t["status"] == "running":
             summary = t.get("summary", "")[:50]
@@ -190,6 +185,13 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
             result["s"] = "W"
             result["m"] = m[:60]
             return result
+    if sess.completed_until > now:
+        result["s"] = "C"
+        return result
+    # turn_active：user_prompt 到 stop 之间、且当前无工具运行 → W（思考中 / 处理结果中）
+    if sess.turn_active:
+        result["s"] = "W"
+        return result
     # 快速工具保证：tool_start后400ms内至少显示一次W
     if sess.last_tool_start_ts > 0 and (now - sess.last_tool_start_ts) < 0.4:
         result["s"] = "W"
@@ -344,6 +346,8 @@ async def _handle_envelope(env: dict) -> dict:
             print(f"[approval] session={session_id!r} waiting={sess.waiting}")
         sess.last_activity_ts = now
         sess.last_tool_start_ts = now  # 保证快速工具W至少推一次
+        # 新 turn 首次真实工作 → 抛弃上一轮的庆祝（避免 tool_done 后 C 闪回）
+        sess.completed_until = 0.0
         _mark_dirty()
         return {"decision": "once"}
 
@@ -394,12 +398,15 @@ async def _handle_envelope(env: dict) -> dict:
             sess.waiting += 1
             print(f"[approval] session={session_id!r} permission_prompt, waiting={sess.waiting}")
             sess.last_activity_ts = now
+            # 新 turn 等审批也算真实工作 → 抛弃上一轮的庆祝
+            sess.completed_until = 0.0
             _mark_dirty()
         return {"ok": True}
 
     if kind == "user_prompt":
+        # 不清 completed_until：让上一轮 stop 的 C 状态自然过期（2s），避免连发 prompt
+        # 把庆祝动画截短。优先级链 C(completed) > W(turn_active) 保证 C 期间不被 W 抢走。
         sess.last_activity_ts = now
-        sess.completed_until = 0.0
         sess.completed_inferred_for_ts = now
         sess.has_subagent = False
         sess.current_error = ""

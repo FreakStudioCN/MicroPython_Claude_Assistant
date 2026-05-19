@@ -223,22 +223,37 @@ async def test_task_error_no_celebrate():
 
 
 async def test_user_prompt_clears_completed():
+    """用 explicit stop 进 C；验证新 contract：user_prompt 保留 completed_until，
+    has_subagent 清零；首个 tool_start 才清 completed_until（避免 tool_done 后 C 闪回）。
+
+    历史：原断言 "user_prompt 清零 completed_until"。upstream 3fcba73 删了静默期推断
+    后，前置的 4.1s 路径已不再生效；本测试改用显式 stop。配合 codex P2 review，
+    contract 升级为"user_prompt 不清 C，新 turn 首次真实工作清"。
+    """
     _reset()
     last = None
+    # 用显式 stop 进 C（不再依赖已废除的静默期推断）
     await d._handle_envelope(_env_pre("Read", tool_use_id="t1"))
     _adv(0.3)
     await d._handle_envelope(_env_post("Read", tool_use_id="t1"))
-    _adv(4.1)
-    last = await d._pusher_tick(last)
-    _assert(_sess().completed_until > 0, "should be in completed state")
+    await d._handle_envelope({"type": "event", "v": 2,
+                              "event": {"kind": "stop", "stop_reason": "end_turn"},
+                              "generic": _g()})
+    saved = _sess().completed_until
+    _assert(saved > _clock[0], "stop should set completed_until")
 
-    # 设置 subagent 标志
+    # user_prompt 保留 completed_until（修上一轮 C 被新 prompt 秒杀的 bug）
     _sess().has_subagent = True
     await d._handle_envelope(_env_user_prompt())
-    _assert(_sess().completed_until == 0.0,
-            f"user_prompt 应清 completed_until, got {_sess().completed_until}")
+    _assert(_sess().completed_until == saved,
+            f"user_prompt 应保留 completed_until, got {_sess().completed_until} (saved={saved})")
     _assert(_sess().has_subagent is False, "user_prompt 应清 has_subagent")
-    print("  ok  user_prompt clears completed pulse + has_subagent")
+
+    # 新 turn 首工具开始 → 抛弃旧 C（防 tool_done 后 C 闪回）
+    await d._handle_envelope(_env_pre("Read", tool_use_id="t2"))
+    _assert(_sess().completed_until == 0.0,
+            f"新 turn tool_start 应清旧 completed_until, got {_sess().completed_until}")
+    print("  ok  user_prompt preserves C; first tool_start clears C; has_subagent reset")
 
 
 async def test_throttle_no_dup_push():

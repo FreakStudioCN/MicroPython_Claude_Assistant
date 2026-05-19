@@ -379,8 +379,13 @@ async def test_c_state_expires_to_idle():
     print("  ok  C 状态到期后恢复 I（不再庆祝）")
 
 
-async def test_user_prompt_resets_completed():
-    """新一轮 user_prompt 清除上一轮的 completed_until。"""
+async def test_user_prompt_starts_new_turn():
+    """新一轮 user_prompt：turn_active=True，但 completed_until 自然过期不被强清。
+
+    历史：原断言是"user_prompt 清零 completed_until"，这导致连发 prompt 时
+    上一轮 C 庆祝动画被截断（见 test_back_to_back_prompts_preserve_c）。
+    fix 后 user_prompt 不动 completed_until，让 C 自然过期 COMPLETED_HOLD_S。
+    """
     _reset()
     last = None
 
@@ -390,14 +395,15 @@ async def test_user_prompt_resets_completed():
     _adv(0.5)
     await d._handle_envelope(_env_post())
     await d._handle_envelope(_env_stop())
-    _assert(_sess().completed_until > _clock[0], "completed_until 应被设置")
+    saved_completed = _sess().completed_until
+    _assert(saved_completed > _clock[0], "completed_until 应被设置")
 
     # 第二轮开始
     await d._handle_envelope(_env_user_prompt())
-    _assert(_sess().completed_until == 0.0,
-            f"user_prompt 应清零 completed_until，实际={_sess().completed_until}")
+    _assert(_sess().completed_until == saved_completed,
+            f"user_prompt 不应改 completed_until，期望={saved_completed}, 实际={_sess().completed_until}")
     _assert(_sess().turn_active is True, "turn_active 应为 True")
-    print("  ok  user_prompt 清除 completed_until，turn_active=True")
+    print("  ok  user_prompt 开新一轮：turn_active=True，completed_until 自然过期")
 
 
 async def test_stop_without_prior_error():
@@ -431,6 +437,171 @@ async def test_stop_without_prior_error():
     print("  ok  dizzy 期间 stop 不触发 C；dizzy 到期后不再推 E")
 
 
+async def test_turn_active_w_keeps_tool_message():
+    """[BUG] turn_active=True 且 tools 非空时，wire 的 W 状态应保留 m 字段（工具名）。
+
+    场景：user_prompt 后紧跟 tool_start（很常见——Claude 收到 prompt 立刻调工具）。
+    预期：wire 是 {"s":"W","m":"Read: file.py"}
+    当前行为（有 bug）：_session_to_wire 把 turn_active 分支放在 tools 循环之前
+        （ble_daemon.py:182-185），提前 return {"s":"W"} 不带 m，
+        设备只看到 "Working" 不知道在干啥（panel 形态文字栏空了）。
+
+    修复方向：交换 turn_active 和 tools 检查的顺序——tools 优先。
+    """
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre(tool="Read", summary="file.py", tid="t1"))
+    _adv(0.1)
+    last = await d._pusher_tick(last)
+
+    # 找出包含工具名的 W wire
+    w_with_m = [s for w in _sent_wires for s in w.get("ss", [])
+                if s.get("s") == "W" and s.get("m")]
+    _assert(len(w_with_m) > 0,
+            f"turn_active=True + tools 非空 → wire 应有 W+m 字段，实际 wires={_sent_wires}\n"
+            f"    BUG: turn_active 分支早 return 把 tool m 字段吞了\n"
+            f"    fix: _session_to_wire 把 turn_active 检查降到 tools 循环之后")
+    _assert(any("Read" in s["m"] for s in w_with_m),
+            f"W 状态的 m 字段应含工具名 'Read'，实际 m={[s['m'] for s in w_with_m]}")
+    print("  ok  turn_active=True + tools 非空 → W 状态保留 m 字段（工具名）")
+
+
+async def test_tool_done_in_new_turn_no_c_flashback():
+    """[BUG] 新 turn 首工具完成后、turn 仍活着的间隙不应闪回 C。
+
+    场景（codex 二轮 P2 review）：
+        T=0:   stop → completed_until=102.5
+        T=0.3: user_prompt 新一轮
+        T=0.5: tool_start(Read) → tools={t1}
+        T=1.0: tool_done → tools={} （但 turn_active=True，completed_until=102.5 仍 > now）
+        T=1.2: 设备应显示什么？
+    预期：W（turn_active 思考中）
+    fix 前：tools 空 + completed_until=102.5 > now=1.2 → 闪回 C（旧 turn 的庆祝灯亮起来）
+    fix：tool_start 时把上一轮 completed_until 清零，C 不会闪回。
+    """
+    _reset()
+    last = None
+
+    # 第一轮 stop → C
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    await d._handle_envelope(_env_stop())
+    # T=100.5: completed_until=102.5
+
+    # 新一轮 user_prompt → tool_start → tool_done
+    _adv(0.3)
+    await d._handle_envelope(_env_user_prompt())
+    _adv(0.2)
+    await d._handle_envelope(_env_pre(tool="Read", summary="main.py", tid="t2"))
+    _adv(0.5)
+    await d._handle_envelope(_env_post(tool="Read", tid="t2"))
+    # T=101.5: tools={}, turn_active=True
+
+    _adv(0.2)
+    last = await d._pusher_tick(last)
+
+    states = _wire_states()
+    _assert("C" not in states,
+            f"新 turn 工具完成后 turn 仍活着，不应闪回旧 C，实际={states}\n"
+            f"    BUG: completed_until 没在 tool_start 时清零，tool_done 后 wire 闪回 C\n"
+            f"    fix: tool_start handler 加 sess.completed_until = 0.0")
+    _assert("W" in states,
+            f"新 turn 仍 turn_active=True，应显示 W，实际={states}")
+    print("  ok  新 turn 工具完成 → 不闪回旧 C（W 思考中）")
+
+
+async def test_c_yields_to_new_turn_tool():
+    """[BUG] C 状态期间，新 turn 启动 tool 时 wire 应让位给 W+m（不是继续 C）。
+
+    场景（codex P2 review 发现的边界 case）：
+        T=0:   stop → completed_until=102.5
+        T=0.3: user_prompt 新一轮
+        T=0.5: tool_start(Read main.py)
+        T=0.7: 设备应显示什么？
+    预期：W+m="Read: main.py"（真实活动优先）
+    fix 前（test_back_to_back_prompts_preserve_c 之后）：
+        优先级链 C(completed) > tools，所以即便有工具在跑也返回 C，
+        m 字段被吞，panel 文字栏空。Codex review identified this as P2.
+
+    修复方向：_session_to_wire 把 completed 检查降到 waiting/tools 之后。
+    语义：C 庆祝 = 真的什么都不在干时才庆祝。
+    """
+    _reset()
+    last = None
+
+    # 第一轮：stop → C
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    await d._handle_envelope(_env_stop())
+    # T=100.5: completed_until=102.5, tools={}
+
+    # 新一轮：user_prompt + tool_start
+    _adv(0.3)
+    await d._handle_envelope(_env_user_prompt())
+    _adv(0.2)
+    await d._handle_envelope(_env_pre(tool="Read", summary="main.py", tid="t2"))
+    # T=101.0: tools={t2}, completed_until=102.5（未过期）, turn_active=True
+
+    _adv(0.2)
+    last = await d._pusher_tick(last)
+
+    # 找出包含工具名的 W wire（必须有 m="Read: main.py"）
+    w_with_m = [s for w in _sent_wires for s in w.get("ss", [])
+                if s.get("s") == "W" and "Read" in s.get("m", "")]
+    _assert(len(w_with_m) > 0,
+            f"新 turn 启动 tool 时不应被 C 遮挡，期望 W+m='Read: main.py'，实际 wires={_sent_wires}\n"
+            f"    BUG: _session_to_wire 优先级 C > tools，C 期间盖住真实工具状态\n"
+            f"    fix: 把 completed_until 检查降到 waiting/tools 之后")
+    print("  ok  C 状态期间，新 turn 的工具活动优先（W+m 不被 C 吞）")
+
+
+async def test_back_to_back_prompts_preserve_c():
+    """[BUG] Stop 后短时间内（< COMPLETED_HOLD_S）发新 user_prompt，C 状态不应被立刻清掉。
+
+    场景：用户连发两条 prompt（实战快速迭代 / demo 演示常见）。
+        T=0: stop → completed_until = 2.0
+        T=0.3: user_prompt（新一轮开始）
+    预期：T=0.5 时 wire 仍是 C（让庆祝动画放完）；T=2.1 后才转 W
+    当前行为（有 bug）：user_prompt 分支强制 sess.completed_until = 0.0
+        （ble_daemon.py:402），C 立刻消失，庆祝动画只跑了 0.3s。
+
+    修复方向：删 user_prompt 里那行 completed_until=0。优先级链
+        C(0:completed) > W(:turn_active) 自然保证 C 期间不被 W 抢走。
+    """
+    _reset()
+    last = None
+
+    # 第一轮：user_prompt → pre → post → stop
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    await d._handle_envelope(_env_stop())
+    # T=100.5: completed_until = 102.5
+
+    # T=100.8: 新一轮 user_prompt（仅 0.3s 后）
+    _adv(0.3)
+    await d._handle_envelope(_env_user_prompt())
+
+    # T=101.0: pusher tick——应看到 C（completed_until=102.5 仍 > now=101.0）
+    _adv(0.2)
+    last = await d._pusher_tick(last)
+
+    _assert(_sess().completed_until > _clock[0],
+            f"新 user_prompt 不应清 completed_until，实际={_sess().completed_until}, now={_clock[0]}\n"
+            f"    BUG: user_prompt 分支强制 sess.completed_until = 0.0\n"
+            f"    fix: 删 ble_daemon.py:402 那一行")
+    _assert("C" in _wire_states(),
+            f"C 期间发的新 user_prompt 不应截断 C，实际={_wire_states()}")
+    print("  ok  连续两轮 prompt 之间 C 状态完整保留")
+
+
 # ── runner ─────────────────────────────────────────────────────────────────
 
 async def main():
@@ -449,11 +620,15 @@ async def main():
         ("test_notification_after_stop_within_1s_ignored",
                                                       test_notification_after_stop_within_1s_ignored),
         ("test_c_state_expires_to_idle",              test_c_state_expires_to_idle),
-        ("test_user_prompt_resets_completed",         test_user_prompt_resets_completed),
+        ("test_user_prompt_starts_new_turn",          test_user_prompt_starts_new_turn),
         ("test_stop_without_prior_error",             test_stop_without_prior_error),
         # 以下两个用例在 bug 修复前预期失败
         ("[BUG] test_cleanup_respects_completed_until",  test_cleanup_respects_completed_until),
         ("[BUG] test_stop_c_after_long_thinking",     test_stop_c_after_long_thinking),
+        ("[BUG] test_turn_active_w_keeps_tool_message",  test_turn_active_w_keeps_tool_message),
+        ("[BUG] test_back_to_back_prompts_preserve_c",   test_back_to_back_prompts_preserve_c),
+        ("[BUG] test_c_yields_to_new_turn_tool",         test_c_yields_to_new_turn_tool),
+        ("[BUG] test_tool_done_in_new_turn_no_c_flashback", test_tool_done_in_new_turn_no_c_flashback),
     ]
 
     print(f"running {len(tests)} stop/C-state tests...\n")
