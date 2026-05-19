@@ -431,6 +431,38 @@ async def test_stop_without_prior_error():
     print("  ok  dizzy 期间 stop 不触发 C；dizzy 到期后不再推 E")
 
 
+async def test_turn_active_w_keeps_tool_message():
+    """[BUG] turn_active=True 且 tools 非空时，wire 的 W 状态应保留 m 字段（工具名）。
+
+    场景：user_prompt 后紧跟 tool_start（很常见——Claude 收到 prompt 立刻调工具）。
+    预期：wire 是 {"s":"W","m":"Read: file.py"}
+    fix 前：_session_to_wire 把 turn_active 分支放在 tools 循环之前，
+        提前 return {"s":"W"} 不带 m，panel 形态文字栏看不到当前工具名。
+        这是 upstream 3e75390 "turn_active 标志修复思考阶段 W 状态缺失"
+        引入的回归——加 turn_active 分支时没考虑顺序。
+
+    修复方向：交换 turn_active 和 tools 检查的顺序——tools 优先。
+    """
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre(tool="Read", summary="file.py", tid="t1"))
+    _adv(0.1)
+    last = await d._pusher_tick(last)
+
+    # 找出包含工具名的 W wire
+    w_with_m = [s for w in _sent_wires for s in w.get("ss", [])
+                if s.get("s") == "W" and s.get("m")]
+    _assert(len(w_with_m) > 0,
+            f"turn_active=True + tools 非空 → wire 应有 W+m 字段，实际 wires={_sent_wires}\n"
+            f"    BUG: turn_active 分支早 return 把 tool m 字段吞了\n"
+            f"    fix: _session_to_wire 把 turn_active 检查降到 tools 循环之后")
+    _assert(any("Read" in s["m"] for s in w_with_m),
+            f"W 状态的 m 字段应含工具名 'Read'，实际 m={[s['m'] for s in w_with_m]}")
+    print("  ok  turn_active=True + tools 非空 → W 状态保留 m 字段（工具名）")
+
+
 # ── runner ─────────────────────────────────────────────────────────────────
 
 async def main():
@@ -451,9 +483,10 @@ async def main():
         ("test_c_state_expires_to_idle",              test_c_state_expires_to_idle),
         ("test_user_prompt_resets_completed",         test_user_prompt_resets_completed),
         ("test_stop_without_prior_error",             test_stop_without_prior_error),
-        # 以下两个用例在 bug 修复前预期失败
+        # 以下三个用例在 bug 修复前预期失败
         ("[BUG] test_cleanup_respects_completed_until",  test_cleanup_respects_completed_until),
         ("[BUG] test_stop_c_after_long_thinking",     test_stop_c_after_long_thinking),
+        ("[BUG] test_turn_active_w_keeps_tool_message",  test_turn_active_w_keeps_tool_message),
     ]
 
     print(f"running {len(tests)} stop/C-state tests...\n")
