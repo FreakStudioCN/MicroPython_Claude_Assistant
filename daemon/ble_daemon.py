@@ -47,7 +47,8 @@ except ImportError:  # 直接 `python daemon/ble_daemon.py` 跑时
     from transport import BleTransport
 
 HOST = "127.0.0.1"
-PORT = 57320
+# CLAUDE_BUDDY_PORT 让 e2e 测试用临时端口避开生产 daemon。生产默认 57320。
+PORT = int(os.environ.get("CLAUDE_BUDDY_PORT", "57320"))
 
 # 业务常量
 PUSH_INTERVAL_S = 0.2          # 5Hz throttle
@@ -212,20 +213,26 @@ def _to_device_wire() -> dict:
     return {"ss": active}
 
 
+def _display_basename(cwd: str) -> str:
+    basename = os.path.basename(cwd) if cwd else "unknown"
+    return basename[:12]
+
+
 def _generate_display_name(session_id: str, cwd: str) -> str:
     """生成 session 显示名称：basename 或 basename+sid后4位（冲突时）。"""
-    basename = os.path.basename(cwd) if cwd else "unknown"
-    basename = basename[:12]  # 截断到12字符
+    basename = _display_basename(cwd)
 
-    # 检查是否已有同 basename 的 session
+    # 检查是否已有同 basename 的 session。即使 cwd 相同，不同 terminal
+    # 里的 Claude Code 也需要区分，否则设备端会显示两个同名状态。
     conflict = any(
-        s.display_name.startswith(basename) and s.cwd != cwd
-        for s in _sessions.values()
+        sid != session_id and _display_basename(s.cwd) == basename
+        for sid, s in _sessions.items()
         if s.display_name
     )
 
     if conflict:
-        suffix = session_id[-4:] if len(session_id) >= 4 else session_id
+        compact_sid = session_id.replace("-", "")
+        suffix = compact_sid[-4:] if len(compact_sid) >= 4 else compact_sid or session_id
         return f"{basename[:8]}-{suffix}"
     return basename
 
@@ -233,6 +240,27 @@ def _generate_display_name(session_id: str, cwd: str) -> str:
 def _mark_dirty():
     global _dirty
     _dirty = True
+
+
+def _retire_stale_waiting_sessions(current_sid: str, cwd: str) -> None:
+    """A fresh prompt in the same cwd means an old idle/question session was abandoned."""
+    if not cwd:
+        return
+    retired = []
+    for sid, old in list(_sessions.items()):
+        if sid == current_sid:
+            continue
+        if old.cwd != cwd:
+            continue
+        if old.tools or old.turn_active:
+            continue
+        if old.waiting > 0:
+            retired.append(sid)
+    for sid in retired:
+        del _sessions[sid]
+    if retired:
+        print(f"[session] retired stale waiting sessions: {retired}")
+        _mark_dirty()
 
 
 def _clear_dirty():
@@ -275,6 +303,15 @@ async def _pusher_tick(last_pushed_wire):
             if last_pushed_wire:
                 for s in last_pushed_wire.get("ss", []):
                     if s.get("s") == "C":
+                        _mark_dirty()
+                        break
+        if sess.dizzy_until > 0 and sess.dizzy_until <= now:
+            sess.dizzy_until = 0.0
+            sess.current_error = ""
+            sess.current_interrupted = False
+            if last_pushed_wire:
+                for s in last_pushed_wire.get("ss", []):
+                    if s.get("s") == "E":
                         _mark_dirty()
                         break
 
@@ -391,19 +428,26 @@ async def _handle_envelope(env: dict) -> dict:
         return {"ok": True}
 
     if kind == "notification":
-        if event.get("notification_type") == "permission_prompt":
-            # stop后1秒内的乱序notification忽略
-            if sess.last_stop_ts > 0 and (now - sess.last_stop_ts) < 1.0:
+        ntype = event.get("notification_type")
+        if ntype in ("permission_prompt", "elicitation_dialog"):
+            # stop后1秒内的permission_prompt乱序notification忽略。
+            if ntype == "permission_prompt" and sess.last_stop_ts > 0 and (now - sess.last_stop_ts) < 1.0:
                 return {"ok": True}
-            sess.waiting += 1
-            print(f"[approval] session={session_id!r} permission_prompt, waiting={sess.waiting}")
+            if sess.waiting <= 0:
+                sess.waiting = 1
+            print(f"[approval] session={session_id!r} {ntype}, waiting={sess.waiting}")
             sess.last_activity_ts = now
-            # 新 turn 等审批也算真实工作 → 抛弃上一轮的庆祝
+            # 新 turn 等审批/用户输入也算真实工作 → 抛弃上一轮的庆祝
             sess.completed_until = 0.0
             _mark_dirty()
+        elif ntype == "idle_prompt":
+            # idle_prompt 只是 Claude Code 进入空闲、等待下一条用户输入。
+            # 它不是选择题/审批本身，不能常驻 P，否则普通完成后会卡 P。
+            print(f"[idle] session={session_id!r} idle_prompt ignored")
         return {"ok": True}
 
     if kind == "user_prompt":
+        _retire_stale_waiting_sessions(session_id, sess.cwd)
         # 不清 completed_until：让上一轮 stop 的 C 状态自然过期（2s），避免连发 prompt
         # 把庆祝动画截短。优先级链 C(completed) > W(turn_active) 保证 C 期间不被 W 抢走。
         sess.last_activity_ts = now
@@ -421,6 +465,21 @@ async def _handle_envelope(env: dict) -> dict:
         sess.waiting = 0
         sess.turn_active = False
         sess.last_stop_ts = now
+        sess.last_activity_ts = now
+        if sess.dizzy_until < now and not sess.current_error:
+            sess.completed_until = now + COMPLETED_HOLD_S
+            sess.completed_inferred_for_ts = now
+            _mark_dirty()
+        return {"ok": True}
+
+    if kind == "session_end":
+        if sess.last_stop_ts > 0 and (now - sess.last_stop_ts) < 10.0:
+            return {"ok": True}
+        sess.tools.clear()
+        sess.waiting = 0
+        sess.turn_active = False
+        sess.last_stop_ts = now
+        sess.last_activity_ts = now
         if sess.dizzy_until < now and not sess.current_error:
             sess.completed_until = now + COMPLETED_HOLD_S
             sess.completed_inferred_for_ts = now
@@ -429,6 +488,8 @@ async def _handle_envelope(env: dict) -> dict:
 
     if kind == "task_error":
         error_msg = event.get("error", "")
+        sess.turn_active = False
+        sess.waiting = 0
         _enter_error_state(sess, now, hard_reset=True, error_msg=error_msg, is_interrupt=False)
         return {"ok": True}
 

@@ -84,27 +84,31 @@ def _any_state(state, wires=None):
     return sum(1 for w in ws if any(s.get("s") == state for s in w.get("ss", [])))
 
 
-def _g(sid="s"):
+def _g(sid="s", cwd="/home/user/project"):
     return {
-        "session_id": sid, "cwd": "/home/user/project",
+        "session_id": sid, "cwd": cwd,
         "transcript_path": "/x.j", "hook_event_name": "X",
         "permission_mode": "auto",
     }
 
 
-def _ev(kind, extra=None, sid="s"):
+def _ev(kind, extra=None, sid="s", cwd="/home/user/project"):
     evt = {"kind": kind}
     if extra:
         evt.update(extra)
-    return {"type": "event", "v": 2, "event": evt, "generic": _g(sid)}
+    return {"type": "event", "v": 2, "event": evt, "generic": _g(sid, cwd=cwd)}
 
 
-def _env_user_prompt(sid="s"):
-    return _ev("user_prompt", {"prompt": "继续"}, sid=sid)
+def _env_user_prompt(sid="s", cwd="/home/user/project"):
+    return _ev("user_prompt", {"prompt": "继续"}, sid=sid, cwd=cwd)
 
 
 def _env_stop(sid="s"):
     return _ev("stop", {"stop_reason": "end_turn"}, sid=sid)
+
+
+def _env_session_end(sid="s"):
+    return _ev("session_end", {"reason": "exit"}, sid=sid)
 
 
 def _env_pre(tool="Read", summary="file.py", tid="t1", sid="s"):
@@ -329,6 +333,81 @@ async def test_stop_clears_waiting():
     print("  ok  stop 清 waiting=0 → C（P 状态不阻断完成）")
 
 
+async def test_idle_prompt_does_not_enter_waiting_state():
+    """Notification idle_prompt is idle, not a blocking user question."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_stop())
+    _adv(2.0)
+    await d._handle_envelope(_env_notification("idle_prompt"))
+
+    _assert(_sess().waiting == 0, f"idle_prompt should not set waiting, actual={_sess().waiting}")
+    last = await d._pusher_tick(last)
+    states = _wire_states()
+    _assert("P" not in states, f"idle_prompt should not push P, actual={states}")
+    print("  ok  notification/idle_prompt ignored; no P")
+
+
+async def test_user_prompt_clears_idle_prompt_waiting():
+    """Next user input clears idle_prompt waiting state."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_stop())
+    _adv(2.0)
+    await d._handle_envelope(_env_notification("permission_prompt"))
+    last = await d._pusher_tick(last)
+    _assert("P" in _wire_states(), f"setup should push P, actual={_wire_states()}")
+
+    await d._handle_envelope(_env_user_prompt())
+    _assert(_sess().waiting == 0, f"user_prompt should clear waiting, actual={_sess().waiting}")
+    last = await d._pusher_tick(last)
+    _assert(_wire_states()[-1] in ("W", "C"), f"user_prompt should leave P, actual={_wire_states()}")
+    print("  ok  user_prompt clears permission waiting state")
+
+
+async def test_new_session_same_cwd_retires_stale_waiting_session():
+    """Restarting Claude in the same cwd should not leave an old P session behind."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt(sid="old"))
+    await d._handle_envelope(_env_stop(sid="old"))
+    _adv(2.0)
+    await d._handle_envelope(_env_notification("permission_prompt", sid="old"))
+    last = await d._pusher_tick(last)
+    _assert("P" in _wire_states(), f"old idle session should push P, actual={_wire_states()}")
+
+    await d._handle_envelope(_env_user_prompt(sid="new"))
+    _assert("old" not in d._sessions, f"old waiting session should be retired, sessions={list(d._sessions)}")
+    last = await d._pusher_tick(last)
+    states = _wire_states()
+    _assert(states.count("P") == 0 and "W" in states, f"new prompt should not keep old P, actual={states}")
+    print("  ok  new same-cwd session retires stale waiting P")
+
+
+async def test_same_cwd_multi_terminal_display_names_are_distinct():
+    """Two Claude Code terminals in the same cwd should not render identical names."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt(sid="11111111-1111-4111-8111-111111111111"))
+    await d._handle_envelope(_env_user_prompt(sid="22222222-2222-4222-8222-222222222222"))
+
+    names = [s.display_name for s in d._sessions.values()]
+    _assert(len(names) == 2, f"expected 2 sessions, actual={names}")
+    _assert(len(set(names)) == 2, f"same-cwd sessions need distinct display names, actual={names}")
+    _assert(any("-" in name for name in names), f"one same-cwd session should get suffix, actual={names}")
+
+    last = await d._pusher_tick(last)
+    wire_names = [s.get("n") for s in (_sent_wires[-1] if _sent_wires else {}).get("ss", [])]
+    _assert(len(set(wire_names)) == 2, f"wire names should be distinct, actual={wire_names}")
+    print("  ok  same-cwd multi-terminal sessions get distinct display names")
+
+
 async def test_notification_after_stop_within_1s_ignored():
     """stop 后 1s 内的 notification 被忽略，不把 C 覆盖为 P。"""
     _reset()
@@ -435,6 +514,43 @@ async def test_stop_without_prior_error():
     _assert("E" not in _wire_states(),
             f"dizzy 到期后不应再推 E，实际={_wire_states()}")
     print("  ok  dizzy 期间 stop 不触发 C；dizzy 到期后不再推 E")
+
+
+async def test_session_end_fallback_completion():
+    """SessionEnd can close a headless turn when Stop is missing."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    _adv(20.0)
+    await d._handle_envelope(_env_session_end())
+
+    last = await d._pusher_tick(last)
+    _assert("C" in _wire_states(), f"SessionEnd fallback 应推 C，实际={_wire_states()}")
+    _adv(d.COMPLETED_HOLD_S + 0.2)
+    last = await d._pusher_tick(last)
+    _assert("I" in _wire_states(), f"SessionEnd fallback 的 C 到期后应推 I，实际={_wire_states()}")
+    print("  ok  SessionEnd 在 Stop 缺失时作为完成兜底：C → I")
+
+
+async def test_session_end_after_stop_ignored():
+    """SessionEnd shortly after Stop should not trigger a second celebration."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_stop())
+    last = await d._pusher_tick(last)
+    _assert(_any_state("C") == 1, f"stop 应只推一次 C，wires={_sent_wires}")
+
+    _adv(0.3)
+    await d._handle_envelope(_env_session_end())
+    last = await d._pusher_tick(last)
+    _assert(_any_state("C") == 1, f"SessionEnd 不应重复推 C，wires={_sent_wires}")
+    print("  ok  Stop 后短时间 SessionEnd 被忽略，不重复 C")
 
 
 async def test_turn_active_w_keeps_tool_message():
@@ -617,11 +733,20 @@ async def main():
         ("test_turn_active_w_between_tools",          test_turn_active_w_between_tools),
         ("test_notification_p_state",                 test_notification_p_state),
         ("test_stop_clears_waiting",                  test_stop_clears_waiting),
+        ("test_idle_prompt_does_not_enter_waiting_state",
+                                                      test_idle_prompt_does_not_enter_waiting_state),
+        ("test_user_prompt_clears_idle_prompt_waiting", test_user_prompt_clears_idle_prompt_waiting),
+        ("test_new_session_same_cwd_retires_stale_waiting_session",
+                                                      test_new_session_same_cwd_retires_stale_waiting_session),
+        ("test_same_cwd_multi_terminal_display_names_are_distinct",
+                                                      test_same_cwd_multi_terminal_display_names_are_distinct),
         ("test_notification_after_stop_within_1s_ignored",
                                                       test_notification_after_stop_within_1s_ignored),
         ("test_c_state_expires_to_idle",              test_c_state_expires_to_idle),
         ("test_user_prompt_starts_new_turn",          test_user_prompt_starts_new_turn),
         ("test_stop_without_prior_error",             test_stop_without_prior_error),
+        ("test_session_end_fallback_completion",      test_session_end_fallback_completion),
+        ("test_session_end_after_stop_ignored",       test_session_end_after_stop_ignored),
         # 以下两个用例在 bug 修复前预期失败
         ("[BUG] test_cleanup_respects_completed_until",  test_cleanup_respects_completed_until),
         ("[BUG] test_stop_c_after_long_thinking",     test_stop_c_after_long_thinking),
