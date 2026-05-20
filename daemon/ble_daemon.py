@@ -216,12 +216,23 @@ def _to_device_wire() -> dict:
 
 
 def _display_basename(cwd: str) -> str:
+    """设备端显示用的 basename：basename(cwd) 截断到 12 字符。
+
+    同 basename 冲突时由 _generate_display_name 加 session_id 后缀消歧，
+    总长仍保持 12 字符以内。
+    """
     basename = os.path.basename(cwd) if cwd else "unknown"
     return basename[:12]
 
 
 def _generate_display_name(session_id: str, cwd: str) -> str:
-    """生成 session 显示名称：basename 或 basename+sid后4位（冲突时）。"""
+    """生成 session 显示名（设备端 wire 字段 n）。
+
+    - 无冲突：basename(cwd)[:12]
+    - 同 basename 冲突：basename[:7] + "-" + session_id 后 4 位（共 12 字符）
+
+    后缀仅用于显示消歧；session 真正的唯一性靠 session_id，不靠 display name。
+    """
     basename = _display_basename(cwd)
 
     # 检查是否已有同 basename 的 session。即使 cwd 相同，不同 terminal
@@ -235,7 +246,7 @@ def _generate_display_name(session_id: str, cwd: str) -> str:
     if conflict:
         compact_sid = session_id.replace("-", "")
         suffix = compact_sid[-4:] if len(compact_sid) >= 4 else compact_sid or session_id
-        return f"{basename[:8]}-{suffix}"
+        return f"{basename[:7]}-{suffix}"
     return basename
 
 

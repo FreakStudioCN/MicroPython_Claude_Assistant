@@ -401,6 +401,9 @@ async def test_same_cwd_multi_terminal_display_names_are_distinct():
     _assert(len(names) == 2, f"expected 2 sessions, actual={names}")
     _assert(len(set(names)) == 2, f"same-cwd sessions need distinct display names, actual={names}")
     _assert(any("-" in name for name in names), f"one same-cwd session should get suffix, actual={names}")
+    # 长度 cap：所有 display name 都不能超过 12 字符（与 _display_basename 一致）。
+    for name in names:
+        _assert(len(name) <= 12, f"display name 超过 12 字符 cap: {name!r} len={len(name)}")
 
     last = await d._pusher_tick(last)
     wire_names = [s.get("n") for s in (_sent_wires[-1] if _sent_wires else {}).get("ss", [])]
