@@ -18,6 +18,7 @@
 # daemon 不可达时 fail-open (返回 {}),保证硬件离线不会拖死 Claude Code.
 
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -49,7 +50,8 @@ except ImportError:
         APPROVAL_TOOLS = {"Bash", "Write", "Edit"}
 
 HOST = "127.0.0.1"
-PORT = 57320
+# CLAUDE_BUDDY_PORT 让 e2e 测试用临时端口避开生产 daemon。生产默认 57320。
+PORT = int(os.environ.get("CLAUDE_BUDDY_PORT", "57320"))
 # v2.2 §A-2: 缩短 timeout, 让 daemon 死的时候不卡 CLI 秒级
 CONNECT_TIMEOUT = 0.3     # localhost connect 应该 ms 级
 RECV_TIMEOUT = 0.5        # daemon 立刻回 JSON，0.5s 远超正常
@@ -280,6 +282,15 @@ def _normalize_stop(event: dict) -> dict:
     }
 
 
+def _normalize_session_end(event: dict) -> dict:
+    return {
+        "type": "event",
+        "v": 2,
+        "event": {"kind": "session_end"},
+        "generic": _generic(event),
+    }
+
+
 def _normalize_fallback(event: dict) -> dict:
     """未识别 hook (Stop / SessionStart / ... 23 类),daemon 会忽略 kind=unknown。"""
     return {
@@ -300,6 +311,7 @@ NORMALIZERS = {
     "UserPromptSubmit":   _normalize_user_prompt,
     "StopFailure":        _normalize_stop_failure,
     "Stop":               _normalize_stop,
+    "SessionEnd":         _normalize_session_end,
 }
 
 

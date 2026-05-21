@@ -84,27 +84,31 @@ def _any_state(state, wires=None):
     return sum(1 for w in ws if any(s.get("s") == state for s in w.get("ss", [])))
 
 
-def _g(sid="s"):
+def _g(sid="s", cwd="/home/user/project"):
     return {
-        "session_id": sid, "cwd": "/home/user/project",
+        "session_id": sid, "cwd": cwd,
         "transcript_path": "/x.j", "hook_event_name": "X",
         "permission_mode": "auto",
     }
 
 
-def _ev(kind, extra=None, sid="s"):
+def _ev(kind, extra=None, sid="s", cwd="/home/user/project"):
     evt = {"kind": kind}
     if extra:
         evt.update(extra)
-    return {"type": "event", "v": 2, "event": evt, "generic": _g(sid)}
+    return {"type": "event", "v": 2, "event": evt, "generic": _g(sid, cwd=cwd)}
 
 
-def _env_user_prompt(sid="s"):
-    return _ev("user_prompt", {"prompt": "继续"}, sid=sid)
+def _env_user_prompt(sid="s", cwd="/home/user/project"):
+    return _ev("user_prompt", {"prompt": "继续"}, sid=sid, cwd=cwd)
 
 
 def _env_stop(sid="s"):
     return _ev("stop", {"stop_reason": "end_turn"}, sid=sid)
+
+
+def _env_session_end(sid="s"):
+    return _ev("session_end", {"reason": "exit"}, sid=sid)
 
 
 def _env_pre(tool="Read", summary="file.py", tid="t1", sid="s"):
@@ -329,6 +333,84 @@ async def test_stop_clears_waiting():
     print("  ok  stop 清 waiting=0 → C（P 状态不阻断完成）")
 
 
+async def test_idle_prompt_does_not_enter_waiting_state():
+    """Notification idle_prompt is idle, not a blocking user question."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_stop())
+    _adv(2.0)
+    await d._handle_envelope(_env_notification("idle_prompt"))
+
+    _assert(_sess().waiting == 0, f"idle_prompt should not set waiting, actual={_sess().waiting}")
+    last = await d._pusher_tick(last)
+    states = _wire_states()
+    _assert("P" not in states, f"idle_prompt should not push P, actual={states}")
+    print("  ok  notification/idle_prompt ignored; no P")
+
+
+async def test_user_prompt_clears_idle_prompt_waiting():
+    """Next user input clears idle_prompt waiting state."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_stop())
+    _adv(2.0)
+    await d._handle_envelope(_env_notification("permission_prompt"))
+    last = await d._pusher_tick(last)
+    _assert("P" in _wire_states(), f"setup should push P, actual={_wire_states()}")
+
+    await d._handle_envelope(_env_user_prompt())
+    _assert(_sess().waiting == 0, f"user_prompt should clear waiting, actual={_sess().waiting}")
+    last = await d._pusher_tick(last)
+    _assert(_wire_states()[-1] in ("W", "C"), f"user_prompt should leave P, actual={_wire_states()}")
+    print("  ok  user_prompt clears permission waiting state")
+
+
+async def test_new_session_same_cwd_retires_stale_waiting_session():
+    """Restarting Claude in the same cwd should not leave an old P session behind."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt(sid="old"))
+    await d._handle_envelope(_env_stop(sid="old"))
+    _adv(2.0)
+    await d._handle_envelope(_env_notification("permission_prompt", sid="old"))
+    last = await d._pusher_tick(last)
+    _assert("P" in _wire_states(), f"old idle session should push P, actual={_wire_states()}")
+
+    await d._handle_envelope(_env_user_prompt(sid="new"))
+    _assert("old" not in d._sessions, f"old waiting session should be retired, sessions={list(d._sessions)}")
+    last = await d._pusher_tick(last)
+    states = _wire_states()
+    _assert(states.count("P") == 0 and "W" in states, f"new prompt should not keep old P, actual={states}")
+    print("  ok  new same-cwd session retires stale waiting P")
+
+
+async def test_same_cwd_multi_terminal_display_names_are_distinct():
+    """Two Claude Code terminals in the same cwd should not render identical names."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt(sid="11111111-1111-4111-8111-111111111111"))
+    await d._handle_envelope(_env_user_prompt(sid="22222222-2222-4222-8222-222222222222"))
+
+    names = [s.display_name for s in d._sessions.values()]
+    _assert(len(names) == 2, f"expected 2 sessions, actual={names}")
+    _assert(len(set(names)) == 2, f"same-cwd sessions need distinct display names, actual={names}")
+    _assert(any("-" in name for name in names), f"one same-cwd session should get suffix, actual={names}")
+    # 长度 cap：所有 display name 都不能超过 12 字符（与 _display_basename 一致）。
+    for name in names:
+        _assert(len(name) <= 12, f"display name 超过 12 字符 cap: {name!r} len={len(name)}")
+
+    last = await d._pusher_tick(last)
+    wire_names = [s.get("n") for s in (_sent_wires[-1] if _sent_wires else {}).get("ss", [])]
+    _assert(len(set(wire_names)) == 2, f"wire names should be distinct, actual={wire_names}")
+    print("  ok  same-cwd multi-terminal sessions get distinct display names")
+
+
 async def test_notification_after_stop_within_1s_ignored():
     """stop 后 1s 内的 notification 被忽略，不把 C 覆盖为 P。"""
     _reset()
@@ -379,8 +461,13 @@ async def test_c_state_expires_to_idle():
     print("  ok  C 状态到期后恢复 I（不再庆祝）")
 
 
-async def test_user_prompt_resets_completed():
-    """新一轮 user_prompt 清除上一轮的 completed_until。"""
+async def test_user_prompt_starts_new_turn():
+    """新一轮 user_prompt：turn_active=True，但 completed_until 自然过期不被强清。
+
+    历史：原断言是"user_prompt 清零 completed_until"，这导致连发 prompt 时
+    上一轮 C 庆祝动画被截断（见 test_back_to_back_prompts_preserve_c）。
+    fix 后 user_prompt 不动 completed_until，让 C 自然过期 COMPLETED_HOLD_S。
+    """
     _reset()
     last = None
 
@@ -390,14 +477,15 @@ async def test_user_prompt_resets_completed():
     _adv(0.5)
     await d._handle_envelope(_env_post())
     await d._handle_envelope(_env_stop())
-    _assert(_sess().completed_until > _clock[0], "completed_until 应被设置")
+    saved_completed = _sess().completed_until
+    _assert(saved_completed > _clock[0], "completed_until 应被设置")
 
     # 第二轮开始
     await d._handle_envelope(_env_user_prompt())
-    _assert(_sess().completed_until == 0.0,
-            f"user_prompt 应清零 completed_until，实际={_sess().completed_until}")
+    _assert(_sess().completed_until == saved_completed,
+            f"user_prompt 不应改 completed_until，期望={saved_completed}, 实际={_sess().completed_until}")
     _assert(_sess().turn_active is True, "turn_active 应为 True")
-    print("  ok  user_prompt 清除 completed_until，turn_active=True")
+    print("  ok  user_prompt 开新一轮：turn_active=True，completed_until 自然过期")
 
 
 async def test_stop_without_prior_error():
@@ -429,6 +517,43 @@ async def test_stop_without_prior_error():
     _assert("E" not in _wire_states(),
             f"dizzy 到期后不应再推 E，实际={_wire_states()}")
     print("  ok  dizzy 期间 stop 不触发 C；dizzy 到期后不再推 E")
+
+
+async def test_session_end_fallback_completion():
+    """SessionEnd can close a headless turn when Stop is missing."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    _adv(20.0)
+    await d._handle_envelope(_env_session_end())
+
+    last = await d._pusher_tick(last)
+    _assert("C" in _wire_states(), f"SessionEnd fallback 应推 C，实际={_wire_states()}")
+    _adv(d.COMPLETED_HOLD_S + 0.2)
+    last = await d._pusher_tick(last)
+    _assert("I" in _wire_states(), f"SessionEnd fallback 的 C 到期后应推 I，实际={_wire_states()}")
+    print("  ok  SessionEnd 在 Stop 缺失时作为完成兜底：C → I")
+
+
+async def test_session_end_after_stop_ignored():
+    """SessionEnd shortly after Stop should not trigger a second celebration."""
+    _reset()
+    last = None
+
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_stop())
+    last = await d._pusher_tick(last)
+    _assert(_any_state("C") == 1, f"stop 应只推一次 C，wires={_sent_wires}")
+
+    _adv(0.3)
+    await d._handle_envelope(_env_session_end())
+    last = await d._pusher_tick(last)
+    _assert(_any_state("C") == 1, f"SessionEnd 不应重复推 C，wires={_sent_wires}")
+    print("  ok  Stop 后短时间 SessionEnd 被忽略，不重复 C")
 
 
 async def test_turn_active_w_keeps_tool_message():
@@ -463,6 +588,140 @@ async def test_turn_active_w_keeps_tool_message():
     print("  ok  turn_active=True + tools 非空 → W 状态保留 m 字段（工具名）")
 
 
+async def test_tool_done_in_new_turn_no_c_flashback():
+    """[BUG] 新 turn 首工具完成后、turn 仍活着的间隙不应闪回 C。
+
+    场景（codex 二轮 P2 review）：
+        T=0:   stop → completed_until=102.5
+        T=0.3: user_prompt 新一轮
+        T=0.5: tool_start(Read) → tools={t1}
+        T=1.0: tool_done → tools={} （但 turn_active=True，completed_until=102.5 仍 > now）
+        T=1.2: 设备应显示什么？
+    预期：W（turn_active 思考中）
+    fix 前：tools 空 + completed_until=102.5 > now=1.2 → 闪回 C（旧 turn 的庆祝灯亮起来）
+    fix：tool_start 时把上一轮 completed_until 清零，C 不会闪回。
+    """
+    _reset()
+    last = None
+
+    # 第一轮 stop → C
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    await d._handle_envelope(_env_stop())
+    # T=100.5: completed_until=102.5
+
+    # 新一轮 user_prompt → tool_start → tool_done
+    _adv(0.3)
+    await d._handle_envelope(_env_user_prompt())
+    _adv(0.2)
+    await d._handle_envelope(_env_pre(tool="Read", summary="main.py", tid="t2"))
+    _adv(0.5)
+    await d._handle_envelope(_env_post(tool="Read", tid="t2"))
+    # T=101.5: tools={}, turn_active=True
+
+    _adv(0.2)
+    last = await d._pusher_tick(last)
+
+    states = _wire_states()
+    _assert("C" not in states,
+            f"新 turn 工具完成后 turn 仍活着，不应闪回旧 C，实际={states}\n"
+            f"    BUG: completed_until 没在 tool_start 时清零，tool_done 后 wire 闪回 C\n"
+            f"    fix: tool_start handler 加 sess.completed_until = 0.0")
+    _assert("W" in states,
+            f"新 turn 仍 turn_active=True，应显示 W，实际={states}")
+    print("  ok  新 turn 工具完成 → 不闪回旧 C（W 思考中）")
+
+
+async def test_c_yields_to_new_turn_tool():
+    """[BUG] C 状态期间，新 turn 启动 tool 时 wire 应让位给 W+m（不是继续 C）。
+
+    场景（codex P2 review 发现的边界 case）：
+        T=0:   stop → completed_until=102.5
+        T=0.3: user_prompt 新一轮
+        T=0.5: tool_start(Read main.py)
+        T=0.7: 设备应显示什么？
+    预期：W+m="Read: main.py"（真实活动优先）
+    fix 前（test_back_to_back_prompts_preserve_c 之后）：
+        优先级链 C(completed) > tools，所以即便有工具在跑也返回 C，
+        m 字段被吞，panel 文字栏空。Codex review identified this as P2.
+
+    修复方向：_session_to_wire 把 completed 检查降到 waiting/tools 之后。
+    语义：C 庆祝 = 真的什么都不在干时才庆祝。
+    """
+    _reset()
+    last = None
+
+    # 第一轮：stop → C
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    await d._handle_envelope(_env_stop())
+    # T=100.5: completed_until=102.5, tools={}
+
+    # 新一轮：user_prompt + tool_start
+    _adv(0.3)
+    await d._handle_envelope(_env_user_prompt())
+    _adv(0.2)
+    await d._handle_envelope(_env_pre(tool="Read", summary="main.py", tid="t2"))
+    # T=101.0: tools={t2}, completed_until=102.5（未过期）, turn_active=True
+
+    _adv(0.2)
+    last = await d._pusher_tick(last)
+
+    # 找出包含工具名的 W wire（必须有 m="Read: main.py"）
+    w_with_m = [s for w in _sent_wires for s in w.get("ss", [])
+                if s.get("s") == "W" and "Read" in s.get("m", "")]
+    _assert(len(w_with_m) > 0,
+            f"新 turn 启动 tool 时不应被 C 遮挡，期望 W+m='Read: main.py'，实际 wires={_sent_wires}\n"
+            f"    BUG: _session_to_wire 优先级 C > tools，C 期间盖住真实工具状态\n"
+            f"    fix: 把 completed_until 检查降到 waiting/tools 之后")
+    print("  ok  C 状态期间，新 turn 的工具活动优先（W+m 不被 C 吞）")
+
+
+async def test_back_to_back_prompts_preserve_c():
+    """[BUG] Stop 后短时间内（< COMPLETED_HOLD_S）发新 user_prompt，C 状态不应被立刻清掉。
+
+    场景：用户连发两条 prompt（实战快速迭代 / demo 演示常见）。
+        T=0: stop → completed_until = 2.0
+        T=0.3: user_prompt（新一轮开始）
+    预期：T=0.5 时 wire 仍是 C（让庆祝动画放完）；T=2.1 后才转 W
+    当前行为（有 bug）：user_prompt 分支强制 sess.completed_until = 0.0
+        （ble_daemon.py:402），C 立刻消失，庆祝动画只跑了 0.3s。
+
+    修复方向：删 user_prompt 里那行 completed_until=0。优先级链
+        C(0:completed) > W(:turn_active) 自然保证 C 期间不被 W 抢走。
+    """
+    _reset()
+    last = None
+
+    # 第一轮：user_prompt → pre → post → stop
+    await d._handle_envelope(_env_user_prompt())
+    await d._handle_envelope(_env_pre())
+    _adv(0.5)
+    await d._handle_envelope(_env_post())
+    await d._handle_envelope(_env_stop())
+    # T=100.5: completed_until = 102.5
+
+    # T=100.8: 新一轮 user_prompt（仅 0.3s 后）
+    _adv(0.3)
+    await d._handle_envelope(_env_user_prompt())
+
+    # T=101.0: pusher tick——应看到 C（completed_until=102.5 仍 > now=101.0）
+    _adv(0.2)
+    last = await d._pusher_tick(last)
+
+    _assert(_sess().completed_until > _clock[0],
+            f"新 user_prompt 不应清 completed_until，实际={_sess().completed_until}, now={_clock[0]}\n"
+            f"    BUG: user_prompt 分支强制 sess.completed_until = 0.0\n"
+            f"    fix: 删 ble_daemon.py:402 那一行")
+    _assert("C" in _wire_states(),
+            f"C 期间发的新 user_prompt 不应截断 C，实际={_wire_states()}")
+    print("  ok  连续两轮 prompt 之间 C 状态完整保留")
+
+
 # ── runner ─────────────────────────────────────────────────────────────────
 
 async def main():
@@ -478,15 +737,27 @@ async def main():
         ("test_turn_active_w_between_tools",          test_turn_active_w_between_tools),
         ("test_notification_p_state",                 test_notification_p_state),
         ("test_stop_clears_waiting",                  test_stop_clears_waiting),
+        ("test_idle_prompt_does_not_enter_waiting_state",
+                                                      test_idle_prompt_does_not_enter_waiting_state),
+        ("test_user_prompt_clears_idle_prompt_waiting", test_user_prompt_clears_idle_prompt_waiting),
+        ("test_new_session_same_cwd_retires_stale_waiting_session",
+                                                      test_new_session_same_cwd_retires_stale_waiting_session),
+        ("test_same_cwd_multi_terminal_display_names_are_distinct",
+                                                      test_same_cwd_multi_terminal_display_names_are_distinct),
         ("test_notification_after_stop_within_1s_ignored",
                                                       test_notification_after_stop_within_1s_ignored),
         ("test_c_state_expires_to_idle",              test_c_state_expires_to_idle),
-        ("test_user_prompt_resets_completed",         test_user_prompt_resets_completed),
+        ("test_user_prompt_starts_new_turn",          test_user_prompt_starts_new_turn),
         ("test_stop_without_prior_error",             test_stop_without_prior_error),
-        # 以下三个用例在 bug 修复前预期失败
+        ("test_session_end_fallback_completion",      test_session_end_fallback_completion),
+        ("test_session_end_after_stop_ignored",       test_session_end_after_stop_ignored),
+        # 以下六个用例在 bug 修复前预期失败
         ("[BUG] test_cleanup_respects_completed_until",  test_cleanup_respects_completed_until),
         ("[BUG] test_stop_c_after_long_thinking",     test_stop_c_after_long_thinking),
         ("[BUG] test_turn_active_w_keeps_tool_message",  test_turn_active_w_keeps_tool_message),
+        ("[BUG] test_back_to_back_prompts_preserve_c",   test_back_to_back_prompts_preserve_c),
+        ("[BUG] test_c_yields_to_new_turn_tool",         test_c_yields_to_new_turn_tool),
+        ("[BUG] test_tool_done_in_new_turn_no_c_flashback", test_tool_done_in_new_turn_no_c_flashback),
     ]
 
     print(f"running {len(tests)} stop/C-state tests...\n")
