@@ -171,10 +171,19 @@ async def test_task_complete_one_shot():
     await d._handle_envelope(_env_post("Read", tool_use_id="t1"))
     last = await d._pusher_tick(last)
 
-    _adv(4.1)  # 跨 TASK_COMPLETE_QUIET_S
+    # v5 current contract: completion is explicit (Stop/SessionEnd), not inferred
+    # from a quiet period after tool_done.
+    _adv(4.1)
     last = await d._pusher_tick(last)
     n = _any_completed()
-    _assert(n == 1, f"expected 1 completed pulse, got {n}")
+    _assert(n == 0, f"quiet period alone should not complete, got {n}")
+
+    await d._handle_envelope({"type": "event", "v": 2,
+                              "event": {"kind": "stop", "stop_reason": "end_turn"},
+                              "generic": _g()})
+    last = await d._pusher_tick(last)
+    n = _any_completed()
+    _assert(n == 1, f"explicit stop should produce 1 completed pulse, got {n}")
 
     # 再多 tick, last_activity_ts 没变, 不应再推
     for _ in range(20):
@@ -273,7 +282,7 @@ async def test_throttle_no_dup_push():
 
 
 async def test_subagent_threshold():
-    """subagent_start 设置 has_subagent, completed 阈值从 4s 变 8s。"""
+    """subagent_start is display state only; Stop still completes explicitly."""
     _reset()
     last = None
     await d._handle_envelope(_env_subagent_start())
@@ -284,18 +293,24 @@ async def test_subagent_threshold():
     await d._handle_envelope(_env_post("Read", tool_use_id="t1"))
     last = await d._pusher_tick(last)
 
-    # 4.1s 后不应触发 (阈值是 8s)
+    # No quiet-period completion, even with a subagent marker.
     _adv(4.1)
     last = await d._pusher_tick(last)
     n1 = _any_completed()
-    _assert(n1 == 0, f"4.1s 后不应 completed (阈值 8s), got {n1}")
+    _assert(n1 == 0, f"quiet period should not complete, got {n1}")
 
-    # 再过 4s (总共 8.1s) 应触发
     _adv(4.0)
     last = await d._pusher_tick(last)
     n2 = _any_completed()
-    _assert(n2 == 1, f"8.1s 后应 completed, got {n2}")
-    print("  ok  subagent_start → completed threshold 8s (not 4s)")
+    _assert(n2 == 0, f"quiet period should not complete after 8.1s, got {n2}")
+
+    await d._handle_envelope({"type": "event", "v": 2,
+                              "event": {"kind": "stop", "stop_reason": "end_turn"},
+                              "generic": _g()})
+    last = await d._pusher_tick(last)
+    n3 = _any_completed()
+    _assert(n3 == 1, f"explicit stop should complete, got {n3}")
+    print("  ok  subagent_start does not infer completion; explicit Stop → C")
 
 
 async def test_parallel_tools():
@@ -321,8 +336,12 @@ async def test_parallel_tools():
     await d._handle_envelope(_env_post("Glob", tool_use_id="t3"))
     last = await d._pusher_tick(last)
     _assert(len(_sess().tools) == 0, "all tools should be done")
-    _assert(_wire_sess()["s"] == "I", "s should be I")
-    print("  ok  parallel tools: 3 tools → W, 逐个完成计数正确")
+    _assert(_wire_sess()["s"] == "W",
+            "fast-tool guarantee should keep W briefly after final tool_done")
+    _adv(0.5)
+    last = await d._pusher_tick(last)
+    _assert(_wire_sess()["s"] == "I", "s should be I after fast-tool window")
+    print("  ok  parallel tools: 3 tools → W, brief W hold, then I")
 
 
 async def test_wire_sessions_fields():
@@ -451,15 +470,20 @@ async def test_waiting_pending_wire():
 
 
 async def test_tool_done_decrements_waiting():
-    """tool_done 时 waiting 递减，wire 恢复 'I'。"""
+    """tool_done decrements waiting; fast-tool W hold expires back to I."""
     _reset()
     last = None
     await d._handle_envelope(_env_pre("Bash", needs_approval=True, tool_use_id="t1"))
     await d._handle_envelope(_env_post("Bash", tool_use_id="t1"))
     _assert(_sess().waiting == 0, f"waiting should be 0 after tool_done, got {_sess().waiting}")
     last = await d._pusher_tick(last)
-    _assert(_wire_sess()["s"] == "I", f"wire s should be I, got {_wire_sess().get('s')}")
-    print("  ok  tool_done decrements waiting → wire s='I'")
+    _assert(_wire_sess()["s"] == "W",
+            f"wire should keep brief W after tool_done, got {_wire_sess().get('s')}")
+    _adv(0.5)
+    last = await d._pusher_tick(last)
+    _assert(_wire_sess()["s"] == "I",
+            f"wire s should be I after fast-tool window, got {_wire_sess().get('s')}")
+    print("  ok  tool_done decrements waiting → brief W → I")
 
 
 async def test_tool_error_decrements_waiting():
@@ -516,7 +540,7 @@ async def test_display_name_conflict():
     await d._handle_envelope(env2)
 
     sess2 = d._sessions.get("sess_xyz789")
-    _assert(sess2.display_name.startswith("MyProjec-"),
+    _assert(sess2.display_name.startswith("MyProje-"),
             f"second session should have suffix, got {sess2.display_name!r}")
     _assert("789" in sess2.display_name,
             f"suffix should contain session_id tail, got {sess2.display_name!r}")

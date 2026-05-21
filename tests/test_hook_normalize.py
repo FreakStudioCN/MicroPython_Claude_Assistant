@@ -8,7 +8,8 @@
 #   2. _tool_category 6 桶映射
 #   3. _hint_from_tool_input 各字段优先级 + None / 空字典 / 无已知 key 边界
 #   4. fallback path: 未识别 hook 不崩, kind="unknown"
-#   5. PreToolUse approval gate: Bash/Write/Edit needs_approval=True
+#   5. PreToolUse v5 display-only contract: needs_approval=False;
+#      permission UI is represented by Notification(permission_prompt)
 #   6. 截断长度统一 80 字 (error_msg / message / error / last_assistant_message)
 #   7. PostToolUse 提取 tool_response.interrupted
 #   8. _hint_from_tool_input 无已知 key 时返回空串（不序列化 dict）
@@ -119,26 +120,36 @@ def test_fallback_unknown():
 
 
 def test_approval_gate():
-    """Bash/Write/Edit needs_approval=True; 其它 False。"""
+    """v5: hook_bridge never blocks approval; risk is display metadata only."""
     g = {
         "session_id": "s", "cwd": "/x", "transcript_path": "/x.j",
         "permission_mode": "auto",
     }
-    for tool in ("Bash", "Write", "Edit"):
-        env = hb.NORMALIZERS["PreToolUse"]({
-            **g, "hook_event_name": "PreToolUse",
-            "tool_name": tool, "tool_input": {},
-        })
-        _assert(env["event"]["needs_approval"] is True,
-                f"{tool} should need approval")
-    for tool in ("Read", "Grep", "Glob", "WebFetch", "Task"):
+    for tool in ("Bash", "Write", "Edit", "Read", "Grep", "Glob", "WebFetch", "Task"):
         env = hb.NORMALIZERS["PreToolUse"]({
             **g, "hook_event_name": "PreToolUse",
             "tool_name": tool, "tool_input": {},
         })
         _assert(env["event"]["needs_approval"] is False,
-                f"{tool} should NOT need approval")
-    print("  ok  approval gate (3 approval tools, 5 non-approval)")
+                f"{tool} should not block approval in v5 display-only mode")
+
+    safe = hb.NORMALIZERS["PreToolUse"]({
+        **g, "hook_event_name": "PreToolUse",
+        "tool_name": "Read", "tool_input": {"file_path": "README.md"},
+    })
+    normal = hb.NORMALIZERS["PreToolUse"]({
+        **g, "hook_event_name": "PreToolUse",
+        "tool_name": "Bash", "tool_input": {"command": "pwd"},
+    })
+    critical = hb.NORMALIZERS["PreToolUse"]({
+        **g, "hook_event_name": "PreToolUse",
+        "tool_name": "Bash", "tool_input": {"command": "git reset --hard HEAD"},
+    })
+    _assert(safe["event"]["risk_level"] == "safe", "Read should classify safe")
+    _assert(normal["event"]["risk_level"] == "normal", "pwd should classify normal")
+    _assert(critical["event"]["risk_level"] == "critical",
+            "destructive bash should classify critical")
+    print("  ok  v5 approval contract: no blocking; risk_level still classified")
 
 
 def test_truncation():

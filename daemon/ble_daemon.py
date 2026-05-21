@@ -289,6 +289,7 @@ def _enter_error_state(sess: _Session, now: float, hard_reset: bool, error_msg: 
     sess.current_interrupted = is_interrupt
     sess.dizzy_until = now + DIZZY_HOLD_S if not is_interrupt else 0.0
     sess.completed_until = 0.0
+    sess.last_tool_start_ts = 0.0
     sess.last_activity_ts = now
     sess.completed_inferred_for_ts = sess.last_activity_ts
     _mark_dirty()
@@ -325,6 +326,18 @@ async def _pusher_tick(last_pushed_wire):
             if last_pushed_wire:
                 for s in last_pushed_wire.get("ss", []):
                     if s.get("s") == "E":
+                        _mark_dirty()
+                        break
+        if (sess.last_tool_start_ts > 0
+                and (now - sess.last_tool_start_ts) >= 0.4
+                and not sess.tools
+                and not sess.turn_active
+                and sess.completed_until <= now
+                and sess.dizzy_until <= now):
+            sess.last_tool_start_ts = 0.0
+            if last_pushed_wire:
+                for s in last_pushed_wire.get("ss", []):
+                    if s.get("s") == "W":
                         _mark_dirty()
                         break
 
