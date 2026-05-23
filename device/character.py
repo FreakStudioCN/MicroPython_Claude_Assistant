@@ -8,7 +8,7 @@ character.py —— 可替换的角色形象接口
 
 import lvgl as lv
 from logo_data import LOGO_SIZE, _LOGO_HEAD, _LOGO_ARMS, _LOGO_TORSO, _LOGO_LEGS, _LOGO_EYES
-from state import S_IDLE, S_WORKING, S_DONE, S_ERROR
+from state import S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
 
 
 class Character:
@@ -49,9 +49,12 @@ _PULSE = (
     lv.color_hex(0xFF5500), lv.color_hex(0xFF7000),
     lv.color_hex(0xFF8C00), lv.color_hex(0xFFAA00),
 )
+_P_HI  = lv.color_hex(0xFFD54F)
+_P_LO  = lv.color_hex(0xF57F17)
 _SWING = {
     S_IDLE:    ( 0,  3,  6,  3,  0, -3, -6, -3),
     S_WORKING: ( 0,  2,  4,  2,  0, -2, -4, -2),
+    S_PENDING: ( 0,  4,  0, -4,  0,  4,  0, -4),
     S_ERROR:   ( 0,  5, 10,  5,  0, -5,-10, -5),
     S_DONE:    ( 0,  4,  8,  4,  0, -4, -8, -4),
 }
@@ -109,6 +112,8 @@ class ClaudeCharacter(Character):
             self._arms.set_style_bg_color(_W_LO, lv.PART.MAIN)
             if self._torso:
                 self._torso.set_style_bg_color(_W_LO, lv.PART.MAIN)
+        elif state == S_PENDING:
+            self._set_all(_P_HI if f % 2 == 0 else _P_LO)
         elif state == S_ERROR:
             self._set_all(_E_HI if f % 2 == 0 else _E_LO)
         elif state == S_DONE:

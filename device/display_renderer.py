@@ -73,7 +73,7 @@ _STATE_LABELS = {S_WORKING: "Working", S_ERROR: "Error", S_DONE: "Done", S_IDLE:
 
 def _dominant_state(sessions) -> str:
     states = [_sess_state(s) for s in sessions] if sessions else []
-    for s in (S_ERROR, S_WORKING, S_DONE):
+    for s in (S_ERROR, S_PENDING, S_WORKING, S_DONE):
         if s in states:
             return s
     return S_IDLE
