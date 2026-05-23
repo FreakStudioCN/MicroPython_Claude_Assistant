@@ -23,6 +23,8 @@ from micropython import const
 import config as cfg
 from character import ClaudeCharacter  # 换形象只改这一行
 from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
+import logging
+_log = logging.getLogger("display")
 
 # ── 颜色常量 ──────────────────────────────────────────────────
 _C_TAB_IDLE  = lv.color_hex(0xCCCCCC)
@@ -373,9 +375,11 @@ class DisplayRenderer:
 
     async def on_connect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_ON, lv.PART.MAIN)
+        _log.info("connected")
 
     async def on_disconnect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_OFF, lv.PART.MAIN)
+        _log.info("disconnected")
         self._sessions = []
         self._update_main()
 
@@ -386,6 +390,7 @@ class DisplayRenderer:
 
         # Logo 动画状态
         if state != self._logo_state:
+            _log.info("dominant: %s->%s", self._logo_state, state)
             self._logo_state = state
             self._logo_frame = 0
 
@@ -463,6 +468,7 @@ class DisplayRenderer:
             return
 
         history.append(record)
+        _log.info("sess=%s state=%s msg=%s", sess.name, state, text)
         if len(history) > cfg.HISTORY_MAX_LEN:
             history.pop(0)
             c = self._containers[index]

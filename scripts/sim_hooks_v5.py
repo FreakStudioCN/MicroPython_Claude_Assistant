@@ -1131,6 +1131,203 @@ CLOCK_SEQUENCE = [
     }, 5.0),
 ]
 
+# ── GUI: S_PENDING 在优先级中高于 S_WORKING ──────────────
+# 验证 _dominant_state 中 E > P > W > C 顺序
+GUI_PENDING_PRIORITY_SEQUENCE = [
+    ("S1: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_pp_s1", "prompt": "Long running task"
+    }),
+    ("S1: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "gui_pp_s1", "tool_name": "Bash",
+        "tool_use_id": "toolu_PP_B1", "tool_input": {"command": "build.sh"}
+    }),
+    # S1=W 状态
+    ("S2: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_pp_s2", "prompt": "Risky operation"
+    }),
+    ("S2: PreToolUse(Bash-risky)", "PreToolUse.json", {
+        "session_id": "gui_pp_s2", "tool_name": "Bash",
+        "tool_use_id": "toolu_PP_B2", "tool_input": {"command": "rm -rf /tmp"}
+    }),
+    ("S2: Notification(permission_prompt→P)", "Notification.json", {
+        "session_id": "gui_pp_s2", "notification_type": "permission_prompt"
+    }),
+    # [期望] S1=W, S2=P → dominant=P → 脸黄色闪烁，消息块=黄 "S2: Pending"
+    ("S1: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "gui_pp_s1", "tool_name": "Bash",
+        "tool_use_id": "toolu_PP_B1", "tool_response": {"interrupted": False}
+    }),
+    ("S1: Stop", "Stop.json", {"session_id": "gui_pp_s1"}),
+    ("S2: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "gui_pp_s2", "tool_name": "Bash",
+        "tool_use_id": "toolu_PP_B2", "tool_response": {"interrupted": False}
+    }),
+    ("S2: Stop", "Stop.json", {"session_id": "gui_pp_s2"}),
+]
+
+# ── GUI: P → E 状态转换 ───────────────────────────────────
+# 验证审批拒绝后 P 直接跳 E，脸色从黄变红
+GUI_PENDING_ERROR_SEQUENCE = [
+    ("UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_pe", "prompt": "Deploy to prod"
+    }),
+    ("PreToolUse(Bash-risky)", "PreToolUse.json", {
+        "session_id": "gui_pe", "tool_name": "Bash",
+        "tool_use_id": "toolu_PE_B1", "tool_input": {"command": "deploy.sh --prod"}
+    }),
+    ("Notification(permission_prompt→P)", "Notification.json", {
+        "session_id": "gui_pe", "notification_type": "permission_prompt"
+    }),
+    # [期望] P 状态，脸黄色
+    ("PostToolUseFailure(denied→E)", "PostToolUseFailure.json", {
+        "session_id": "gui_pe", "tool_name": "Bash",
+        "tool_use_id": "toolu_PE_B1", "error": "User denied"
+    }),
+    # [期望] E 状态，脸红色，选项卡闪烁
+    ("StopFailure", "StopFailure.json", {"session_id": "gui_pe"}),
+]
+
+# ── GUI: 快速工具（< 0.4s）兜底显示 ─────────────────────
+# 验证 last_tool_start_ts 兜底：工具名在消息块中至少显示 0.4s
+GUI_FAST_TOOL_SEQUENCE = [
+    ("UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_ft", "prompt": "Quick reads"
+    }),
+] + [
+    (f"PreToolUse(Read-{i})", "PreToolUse.json", {
+        "session_id": "gui_ft", "tool_name": "Read",
+        "tool_use_id": f"toolu_FT_R{i}", "tool_input": {"file_path": f"f{i}.py"}
+    })
+    for i in range(1, 5)
+] + [
+    (f"PostToolUse(Read-{i})", "PostToolUse.json", {
+        "session_id": "gui_ft", "tool_name": "Read",
+        "tool_use_id": f"toolu_FT_R{i}", "tool_response": {"interrupted": False}
+    })
+    for i in range(1, 5)
+] + [
+    ("Stop", "Stop.json", {"session_id": "gui_ft"}),
+]
+
+# ── GUI: C 状态后新一轮不清除 completed_until ────────────
+# 验证 UserPromptSubmit 不会提前清除 C 状态显示
+GUI_C_NEW_TURN_SEQUENCE = [
+    ("Turn1: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_cnt", "prompt": "First task"
+    }),
+    ("Turn1: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "gui_cnt", "tool_name": "Read",
+        "tool_use_id": "toolu_CNT_R1", "tool_input": {"file_path": "a.py"}
+    }),
+    ("Turn1: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "gui_cnt", "tool_name": "Read",
+        "tool_use_id": "toolu_CNT_R1", "tool_response": {"interrupted": False}
+    }),
+    ("Turn1: Stop(→C)", "Stop.json", {"session_id": "gui_cnt"}),
+    # [期望] C 状态，脸绿色
+    # 立即发起第二轮（completed_until 窗口内）
+    ("Turn2: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_cnt", "prompt": "Second task"
+    }),
+    # [期望] 仍显示 C（completed_until 未过期），不应立即变灰
+    ("Turn2: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "gui_cnt", "tool_name": "Bash",
+        "tool_use_id": "toolu_CNT_B1", "tool_input": {"command": "pytest"}
+    }),
+    # [期望] 现在变 W（有新工具运行）
+    ("Turn2: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "gui_cnt", "tool_name": "Bash",
+        "tool_use_id": "toolu_CNT_B1", "tool_response": {"interrupted": False}
+    }),
+    ("Turn2: Stop", "Stop.json", {"session_id": "gui_cnt"}),
+]
+
+# ── GUI: 同 cwd 旧 session 退休 ──────────────────────────
+# 验证同一 cwd 新 session 启动时，旧 session（P 状态）被移除
+GUI_SESSION_RETIRE_SEQUENCE = [
+    ("Old: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "gui_sr_old",
+        "cwd": "C:\\Projects\\shared_proj",
+        "prompt": "Old task"
+    }),
+    ("Old: Notification(→P)", "Notification.json", {
+        "session_id": "gui_sr_old",
+        "cwd": "C:\\Projects\\shared_proj",
+        "notification_type": "permission_prompt"
+    }),
+    # [期望] old session P 状态
+    ("New: UserPromptSubmit(同cwd→旧session退休)", "UserPromptSubmit.json", {
+        "session_id": "gui_sr_new",
+        "cwd": "C:\\Projects\\shared_proj",
+        "prompt": "New task same dir"
+    }),
+    # [期望] old session 被移除，new session 出现（W 或 I）
+    ("New: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "gui_sr_new",
+        "cwd": "C:\\Projects\\shared_proj",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_SR_R1", "tool_input": {"file_path": "main.py"}
+    }),
+    ("New: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "gui_sr_new",
+        "cwd": "C:\\Projects\\shared_proj",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_SR_R1", "tool_response": {"interrupted": False}
+    }),
+    ("New: Stop", "Stop.json", {
+        "session_id": "gui_sr_new",
+        "cwd": "C:\\Projects\\shared_proj"
+    }),
+]
+
+# ── GUI: 显示名 basename 冲突加后缀 ──────────────────────
+# 验证两个不同路径但 basename 相同时，daemon 加数字后缀区分
+GUI_DISPLAY_NAME_CONFLICT_SEQUENCE = [
+    ("S1: UserPromptSubmit(proj_a/main)", "UserPromptSubmit.json", {
+        "session_id": "gui_dnc_s1",
+        "cwd": "C:\\Projects\\proj_a",
+        "prompt": "Task in proj_a"
+    }),
+    ("S2: UserPromptSubmit(proj_b/main)", "UserPromptSubmit.json", {
+        "session_id": "gui_dnc_s2",
+        "cwd": "C:\\Projects\\proj_b",
+        "prompt": "Task in proj_b"
+    }),
+    # [期望] S1 显示 "proj_a", S2 显示 "proj_b"（basename 不同，无冲突）
+    # 制造 basename 冲突：两个 session 都在名为 "myapp" 的目录
+    ("S3: UserPromptSubmit(a/myapp)", "UserPromptSubmit.json", {
+        "session_id": "gui_dnc_s3",
+        "cwd": "C:\\Users\\alice\\myapp",
+        "prompt": "Alice task"
+    }),
+    ("S4: UserPromptSubmit(b/myapp)", "UserPromptSubmit.json", {
+        "session_id": "gui_dnc_s4",
+        "cwd": "C:\\Users\\bob\\myapp",
+        "prompt": "Bob task"
+    }),
+    # [期望] S3="myapp", S4="myapp2"（或类似后缀）
+    ("S1: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "gui_dnc_s1", "tool_name": "Read",
+        "tool_use_id": "toolu_DNC_R1", "tool_input": {"file_path": "a.py"}
+    }),
+    ("S3: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "gui_dnc_s3", "tool_name": "Read",
+        "tool_use_id": "toolu_DNC_R2", "tool_input": {"file_path": "b.py"}
+    }),
+    ("S1: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "gui_dnc_s1", "tool_name": "Read",
+        "tool_use_id": "toolu_DNC_R1", "tool_response": {"interrupted": False}
+    }),
+    ("S3: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "gui_dnc_s3", "tool_name": "Read",
+        "tool_use_id": "toolu_DNC_R2", "tool_response": {"interrupted": False}
+    }),
+    ("S1: Stop", "Stop.json", {"session_id": "gui_dnc_s1"}),
+    ("S2: Stop", "Stop.json", {"session_id": "gui_dnc_s2"}),
+    ("S3: Stop", "Stop.json", {"session_id": "gui_dnc_s3"}),
+    ("S4: Stop", "Stop.json", {"session_id": "gui_dnc_s4"}),
+]
+
 # ── 所有序列（--all 模式）────────────────────────────────
 ALL_SEQUENCES = [
     (BASIC_SEQUENCE,               "基本功能测试"),
@@ -1151,6 +1348,12 @@ ALL_SEQUENCES = [
     (GUI_FACE_TRANSITIONS_SEQUENCE,    "GUI 脸部状态转换测试"),
     (GUI_5SESSIONS_SEQUENCE,           "GUI 五 Session 并发测试"),
     (GUI_PRIORITY_SEQUENCE,            "GUI 消息块优先级测试"),
+    (GUI_PENDING_PRIORITY_SEQUENCE,    "GUI Pending 优先级测试"),
+    (GUI_PENDING_ERROR_SEQUENCE,       "GUI Pending→Error 转换测试"),
+    (GUI_FAST_TOOL_SEQUENCE,           "GUI 快速工具兜底测试"),
+    (GUI_C_NEW_TURN_SEQUENCE,          "GUI C 状态新轮次测试"),
+    (GUI_SESSION_RETIRE_SEQUENCE,      "GUI Session 退休测试"),
+    (GUI_DISPLAY_NAME_CONFLICT_SEQUENCE, "GUI 显示名冲突测试"),
 ]
 
 
@@ -1328,6 +1531,12 @@ def main():
     parser.add_argument("--clock", action="store_true",
                         help="闹钟版语音测试（TTS 触发时序、busy 丢弃、3 session 并发）")
     parser.add_argument("--approval", action="store_true", help="审批通知测试（PENDING 状态）")
+    parser.add_argument("--gui-pending-priority", action="store_true", help="GUI Pending 优先级测试（P > W）")
+    parser.add_argument("--gui-pending-then-error", action="store_true", help="GUI Pending→Error 转换测试")
+    parser.add_argument("--gui-fast-tool", action="store_true", help="GUI 快速工具兜底测试（< 0.4s）")
+    parser.add_argument("--gui-c-then-new-turn", action="store_true", help="GUI C 状态新轮次测试")
+    parser.add_argument("--gui-session-retire", action="store_true", help="GUI Session 退休测试（同 cwd）")
+    parser.add_argument("--gui-display-name-conflict", action="store_true", help="GUI 显示名冲突测试")
     parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
                         help="跳过序列结束后的 session 清除等待")
@@ -1407,6 +1616,18 @@ def main():
         sequence, test_name = CLOCK_SEQUENCE, "闹钟版语音测试"
     elif args.approval:
         sequence, test_name = APPROVAL_SEQUENCE, "审批通知测试"
+    elif args.gui_pending_priority:
+        sequence, test_name = GUI_PENDING_PRIORITY_SEQUENCE, "GUI Pending 优先级测试"
+    elif args.gui_pending_then_error:
+        sequence, test_name = GUI_PENDING_ERROR_SEQUENCE, "GUI Pending→Error 转换测试"
+    elif args.gui_fast_tool:
+        sequence, test_name = GUI_FAST_TOOL_SEQUENCE, "GUI 快速工具兜底测试"
+    elif args.gui_c_then_new_turn:
+        sequence, test_name = GUI_C_NEW_TURN_SEQUENCE, "GUI C 状态新轮次测试"
+    elif args.gui_session_retire:
+        sequence, test_name = GUI_SESSION_RETIRE_SEQUENCE, "GUI Session 退休测试"
+    elif args.gui_display_name_conflict:
+        sequence, test_name = GUI_DISPLAY_NAME_CONFLICT_SEQUENCE, "GUI 显示名冲突测试"
     else:
         sequence, test_name = BASIC_SEQUENCE, "基本功能测试"
 

@@ -15,6 +15,10 @@ if cfg.LOG_ENABLE:
         os.mkdir("/log")
     except OSError:
         pass
+    try:
+        os.rename("/log/run.log", "/log/prev_run.log")
+    except OSError:
+        pass
     logging.basicConfig(filename=cfg.LOG_FILE, filemode="w", level=cfg.LOG_LEVEL)
 else:
     logging.basicConfig(level=cfg.LOG_LEVEL)
