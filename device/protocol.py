@@ -3,32 +3,17 @@
 #
 # 所有消息均为换行符结尾的 JSON 字符串，通过 BLE NUS 传输。
 #
-# PC → 设备（v3 多 session wire）：
-#   {"v": 2, "sessions": [
-#     {"id": "sess1234", "running": 1, "waiting": 0, "completed": false,
-#      "msg": "Bash: ls", "category": "exec", "error": "", "interrupted": false,
-#      "prompt": {"id": "toolu_xxx", "tool": "Bash", "hint": "命令内容"}}
-#   ]}
-#   sessions 数组只含活跃 session（有工具运行，或近 10s 内有活动）。
-#   prompt 字段非 null 时表示该 session 有工具等待审批。
-#
-# PC → 设备（心跳）：
-#   {"cmd": "ping", "ts": 1234567890.123}
-#
-# 设备 → PC（心跳响应）：
-#   {"ack": "pong", "ts": 1234567890.456}
-#
-# 设备 → PC（审批决策）：
-#   {"cmd": "permission", "id": "toolu_xxx", "decision": "once"}
-#   id 字段为真实 tool_use_id，由 PC 端 prompt.id 提供
+# PC → 设备（v5 多 session wire）：
+#   {"ss": [{"n": "proj", "s": "W", "m": "Bash: ls"}]}
+#   ss 数组只含活跃 session（有工具运行，或近 10s 内有活动）。
+#   s 字段：I=空闲 / W=执行中 / P=待审批提醒 / C=完成 / E=出错
+#   m 字段：工具名或状态描述（可选）
 #
 # PC → 设备（控制命令）：
 #   {"cmd": "name"/"owner"/"unpair"}
 #
 # 设备 → PC（命令应答）：
 #   {"ack": "name", "ok": true}
-#
-# 向后兼容：parse() 仍能解析旧 v2 单 session wire（无 sessions 字段）返回 StatusMsg
 #
 # 状态枚举与状态转换逻辑见 state.py
 # ============================================================
@@ -42,7 +27,7 @@ from state import S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
 
 
 class SessionStatus:
-    """v4 wire 中单个 session 的状态（从 s 字段推导所有属性）。"""
+    """v5 wire 中单个 session 的状态（从 s 字段推导所有属性）。"""
     def __init__(self, d: dict):
         s = d.get("s", S_IDLE)
         self.name        = d.get("n", "?")
@@ -56,7 +41,7 @@ class SessionStatus:
 
 
 class MultiSessionMsg:
-    """v4 wire 消息：包含所有活跃 session 的状态数组。"""
+    """v5 wire 消息：包含所有活跃 session 的状态数组。"""
     def __init__(self, sessions: list):
         self.sessions = [SessionStatus(s) for s in sessions]
 
