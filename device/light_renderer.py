@@ -20,9 +20,12 @@ import math
 import time
 import machine
 import neopixel
+import logging
 import config as cfg
 from voice_task import VoiceTask
 from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
+
+_log = logging.getLogger("light")
 
 # 状态优先级：多 session 时取最高优先级
 _PRIORITY = {S_ERROR: 0, S_PENDING: 1, S_WORKING: 2, S_DONE: 3, S_IDLE: 4}
@@ -66,20 +69,20 @@ class LightRenderer:
     # ── 公共接口 ──────────────────────────────────────────────
 
     async def init(self):
-        print("[light] init hardware...")
+        _log.info("init hardware...")
         pin = machine.Pin(cfg.CLOCK_LED_PIN, machine.Pin.OUT)
         self._np = neopixel.NeoPixel(pin, cfg.CLOCK_LED_COUNT)
         self._set_all(0, 0, 0)
         self._timer = machine.Timer(0)
         self._timer.init(period=50, mode=machine.Timer.PERIODIC, callback=lambda _: self._tick_leds())
-        print(f"[light] NeoPixel ready: pin={cfg.CLOCK_LED_PIN} count={cfg.CLOCK_LED_COUNT}")
+        _log.info("NeoPixel ready: pin=%d count=%d", cfg.CLOCK_LED_PIN, cfg.CLOCK_LED_COUNT)
         self._disconnect_loop = True
         self._disconnect_fade = cfg.LIGHT_DISCONNECT_FRAMES
         asyncio.create_task(self._disconnect_speak_loop())
 
     async def render(self, msg):
         while self._log_queue:
-            print(self._log_queue.pop(0))
+            _log.info("%s", self._log_queue.pop(0))
         if msg is None:
             return
         self._sessions = msg.sessions
@@ -90,13 +93,13 @@ class LightRenderer:
             prev = self._prev_states.get(sess.name)
             if cur != prev:
                 label = _STATE_LABEL.get(cur, cur)
-                print(f"[light] sess={sess.name} {prev} → {cur}({label}) msg={sess.msg or ''!r}")
+                _log.info("sess=%s %s->%s msg=%s", sess.name, prev, cur, sess.msg or "")
                 self._push_history(sess, cur)
                 if cur in (S_DONE, S_ERROR, S_PENDING):
                     await self._voice.trigger(self._history, sess, cur)
                     if cur not in self._state_queue:
                         self._state_queue.append(cur)
-                    print(f"[light] queue: {self._state_queue}")
+                    _log.info("queue: %s", self._state_queue)
                 self._prev_states[sess.name] = cur
 
         # 偶发播报
@@ -116,12 +119,12 @@ class LightRenderer:
                 sess_info = " | ".join(
                     f"{s.name}:{_sess_state(s)}" for s in self._sessions
                 ) if self._sessions else "none"
-                print(f"[light] state: {self._state} → {bg}  sessions=[{sess_info}]")
+                _log.info("state: %s->%s sessions=[%s]", self._state, bg, sess_info)
                 self._state = bg
                 self._state_frame = self._frame
 
     async def on_connect(self):
-        print("[light] on_connect: flash=10, clearing sessions/queue/prev_states")
+        _log.info("on_connect: flash=10, clearing sessions/queue/prev_states")
         self._connect_flash = cfg.LIGHT_CONNECT_FRAMES
         self._disconnect_loop = False
         self._sessions = []
@@ -134,7 +137,7 @@ class LightRenderer:
         asyncio.create_task(self._voice.trigger([], None, "connect", force=True))
 
     async def on_disconnect(self):
-        print(f"[light] on_disconnect: fade=10, state was={self._state}, queue={self._state_queue}")
+        _log.info("on_disconnect: fade=10, state was=%s, queue=%s", self._state, self._state_queue)
         self._disconnect_fade = cfg.LIGHT_DISCONNECT_FRAMES
         self._sessions = []
         self._state_queue.clear()
@@ -183,7 +186,7 @@ class LightRenderer:
         if self._state_queue:
             head = self._state_queue[0]
             if self._state != head:
-                self._log_queue.append(f"[light] queue→state: {self._state} → {head}  remaining={self._state_queue}")
+                self._log_queue.append(f"queue->state: {self._state} -> {head} remaining={self._state_queue}")
                 self._state = head
                 self._state_frame = self._frame
                 self._queue_frame = self._frame
@@ -193,9 +196,9 @@ class LightRenderer:
                     self._state = self._state_queue[0]
                     self._state_frame = self._frame
                     self._queue_frame = self._frame
-                    self._log_queue.append(f"[light] queue dequeue→next: {self._state}  remaining={self._state_queue}")
+                    self._log_queue.append(f"queue dequeue->next: {self._state} remaining={self._state_queue}")
                 else:
-                    self._log_queue.append(f"[light] queue empty, state={self._state}")
+                    self._log_queue.append(f"queue empty, state={self._state}")
 
         s = self._state
         f = self._frame - self._state_frame

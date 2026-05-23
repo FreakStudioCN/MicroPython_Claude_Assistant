@@ -122,3 +122,8 @@ MAX_SESSIONS        = 5
 HISTORY_MAX_LEN     = 20
 BLINK_INTERVAL_S    = 0.4
 
+# ── 日志配置 ──────────────────────────────────────────────────
+LOG_ENABLE = True       # True = 写文件；False = 走串口
+LOG_FILE   = "/log/run.log"
+LOG_LEVEL  = 20         # INFO=20, DEBUG=10
+

@@ -4,9 +4,22 @@ except ImportError:
     import asyncio
 
 import gc
+import os
 import config as cfg
 from queue import Queue
 import protocol as p
+import logging
+
+if cfg.LOG_ENABLE:
+    try:
+        os.mkdir("/log")
+    except OSError:
+        pass
+    logging.basicConfig(filename=cfg.LOG_FILE, filemode="w", level=cfg.LOG_LEVEL)
+else:
+    logging.basicConfig(level=cfg.LOG_LEVEL)
+
+_log = logging.getLogger("main")
 
 _transport = None
 _msg_queue = None
@@ -15,10 +28,10 @@ _renderer  = None
 
 async def ble_recv_task():
     while True:
-        print("[ble] waiting for PC connection...")
+        _log.info("waiting for PC connection...")
         await _transport.connect()
         await _renderer.on_connect()
-        print("[ble] connected")
+        _log.info("connected")
         try:
             while _transport.connected():
                 line = await _transport.recv_line()
@@ -26,7 +39,7 @@ async def ble_recv_task():
         except OSError:
             pass
         await _renderer.on_disconnect()
-        print("[ble] disconnected")
+        _log.info("disconnected")
 
 
 async def render_task():
@@ -39,10 +52,10 @@ async def render_task():
 async def _main():
     global _msg_queue, _renderer, _transport
 
-    print("[init] waiting 3s for mpremote connection...")
+    _log.info("waiting 3s for mpremote connection...")
     await asyncio.sleep(3)
     gc.collect()
-    print(f"[mem] startup: free={gc.mem_free()} alloc={gc.mem_alloc()}")
+    _log.info("startup: free=%d alloc=%d", gc.mem_free(), gc.mem_alloc())
 
     if cfg.VARIANT == "clock":
         from light_renderer import LightRenderer
@@ -53,12 +66,12 @@ async def _main():
 
     await _renderer.init()
     gc.collect()
-    print(f"[mem] after renderer: free={gc.mem_free()} alloc={gc.mem_alloc()}")
+    _log.info("after renderer: free=%d alloc=%d", gc.mem_free(), gc.mem_alloc())
 
     from transport import BleTransport
     _transport = BleTransport()
     gc.collect()
-    print(f"[mem] after BLE: free={gc.mem_free()} alloc={gc.mem_alloc()}")
+    _log.info("after BLE: free=%d alloc=%d", gc.mem_free(), gc.mem_alloc())
 
     _msg_queue = Queue()
     await asyncio.gather(ble_recv_task(), render_task())

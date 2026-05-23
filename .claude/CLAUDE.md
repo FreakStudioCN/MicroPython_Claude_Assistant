@@ -44,3 +44,23 @@
 1. 所有 Python 代码遵循 PEP 8
 2. 注释和文档字符串使用中文
 3. Git commit message 使用中文或英文均可
+
+## 联合测试流程
+
+设备端日志写入 `/log/run.log`（每次启动清空），通过 `config.py` 的 `LOG_ENABLE` 控制：
+- `LOG_ENABLE = True`：写设备 flash 文件，供 mpremote 读取分析
+- `LOG_ENABLE = False`：走串口输出，正常使用模式
+
+**测试步骤：**
+
+1. 用户手动启动 daemon：
+   ```
+   python daemon/ble_daemon.py 2>&1 | tee logs/daemon.log
+   ```
+2. 用户告知 Claude "daemon 已启动"
+3. Claude 执行：`python scripts/sim_hooks_v5.py --clock --no-daemon`
+4. Claude 读取设备日志（注意冒号前缀）：`mpremote fs cat :/log/run.log`
+5. Claude 读取 `logs/daemon.log`，对比两端日志分析问题
+6. Claude 修改代码后提示用户重启 daemon，重复上述流程验证
+
+**注意：** BLE（测试通信）和 USB 串口（mpremote 读日志）不冲突，可同时使用。

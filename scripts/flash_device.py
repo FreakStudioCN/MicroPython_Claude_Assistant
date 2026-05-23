@@ -146,6 +146,23 @@ def upload_firmware(config_content: str):
             run_mpremote(["cp", local_path, f":{remote_name}"])
             print(f"  ✓ {remote_name} ({os.path.getsize(local_path)/1024:.1f} KB)")
 
+        lib_dir = os.path.join(DEVICE_DIR, "lib")
+        if os.path.isdir(lib_dir):
+            subprocess.run(["mpremote", "connect", _COM_PORT, "mkdir", ":lib"], capture_output=True)
+            for fname in sorted(os.listdir(lib_dir)):
+                src = os.path.join(lib_dir, fname)
+                if not os.path.isfile(src) or not fname.endswith(".py"):
+                    continue
+                if use_mpy:
+                    mpy_name = fname.replace(".py", ".mpy")
+                    mpy_path = os.path.join(tmpdir, mpy_name)
+                    ok = compile_to_mpy(src, mpy_path)
+                    local, remote = (mpy_path if ok else src, f"lib/{mpy_name}" if ok else f"lib/{fname}")
+                else:
+                    local, remote = src, f"lib/{fname}"
+                run_mpremote(["cp", local, f":{remote}"])
+                print(f"  ✓ {remote} ({os.path.getsize(local)/1024:.1f} KB)")
+
         assets_dir = os.path.join(DEVICE_DIR, "assets")
         if os.path.isdir(assets_dir):
             subprocess.run(["mpremote", "connect", _COM_PORT, "mkdir", ":assets"], capture_output=True)
