@@ -128,6 +128,9 @@ class DisplayRenderer:
         # 槽位名记录（用于检测 session 变化）
         self._slot_names = [""] * MAX_SESSIONS
 
+        # 长按 guard：吃掉长按后紧随的 CLICKED
+        self._tab_long_pressed = [False] * MAX_SESSIONS
+
     async def init(self):
         print("[renderer] init hardware...")
         self._init_hardware()
@@ -285,7 +288,8 @@ class DisplayRenderer:
             btn.set_size(TAB_W, TAB_H)
             btn.set_style_bg_color(_C_TAB_IDLE, lv.PART.MAIN)
             btn.set_style_radius(8, lv.PART.MAIN)
-            btn.add_event_cb(lambda e, idx=i: self._on_tab_click(idx), lv.EVENT.CLICKED, None)
+            btn.add_event_cb(lambda e, idx=i: self._on_tab_click(idx),      lv.EVENT.CLICKED,      None)
+            btn.add_event_cb(lambda e, idx=i: self._on_tab_long_press(idx), lv.EVENT.LONG_PRESSED, None)
             lbl = lv.label(btn)
             lbl.set_text(f"S{i+1}")
             lbl.set_long_mode(lv.label.LONG_MODE.SCROLL_CIRCULAR)
@@ -383,11 +387,26 @@ class DisplayRenderer:
     # ── 事件回调 ──────────────────────────────────────────────
 
     def _on_tab_click(self, idx):
+        if self._tab_long_pressed[idx]:
+            self._tab_long_pressed[idx] = False
+            return
         if idx != self._selected:
             self._containers[self._selected].add_flag(lv.obj.FLAG.HIDDEN)
             self._containers[idx].remove_flag(lv.obj.FLAG.HIDDEN)
             self._selected = idx
             print(f"[tab] switch to S{idx + 1}")
+
+    def _on_tab_long_press(self, idx):
+        self._tab_long_pressed[idx] = True
+        self._histories[idx].clear()
+        self._containers[idx].clean()
+        lbl = self._tab_labels[idx]
+        orig = lbl.get_text()
+        lbl.set_text("\u2713")
+        lv.timer_create(
+            lambda t, l=lbl, o=orig: l.set_text(o), 1500, None
+        ).set_repeat_count(1)
+        _log.info("slot[%d] history cleared by long press", idx)
 
     def _on_brightness_change(self, e):
         val = self._brightness_slider.get_value()
