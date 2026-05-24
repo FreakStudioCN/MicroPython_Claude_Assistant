@@ -23,6 +23,7 @@ from micropython import const
 import config as cfg
 from character import ClaudeCharacter  # 换形象只改这一行
 from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
+from voice_task import VoiceTask
 import logging
 _log = logging.getLogger("display")
 
@@ -72,6 +73,7 @@ DOT_SIZE     = const(18)
 _DOT_COLORS   = {S_WORKING: _C_DOT_WORK, S_ERROR: _C_DOT_ERR, S_DONE: _C_DOT_DONE, S_IDLE: _C_DOT_IDLE, S_PENDING: _C_DOT_PEND}
 _BLOCK_COLORS = {S_WORKING: _C_BG_NORMAL, S_ERROR: _C_BG_ERROR, S_DONE: _C_BG_SUCCESS, S_IDLE: _C_BG_IDLE, S_PENDING: _C_BG_PENDING}
 _STATE_LABELS = {S_WORKING: "Working", S_ERROR: "Error", S_DONE: "Done", S_IDLE: "Idle", S_PENDING: "Pending"}
+_STATE_LABEL_ZH = {S_IDLE: "空闲", S_WORKING: "工作中", S_PENDING: "等待审批", S_DONE: "完成", S_ERROR: "出错"}
 
 def _dominant_state(sessions) -> str:
     states = [_sess_state(s) for s in sessions] if sessions else []
@@ -116,6 +118,11 @@ class DisplayRenderer:
         # 共享
         self._sessions  = []
         self._disp      = None
+
+        # 语音
+        self._voice       = VoiceTask()
+        self._prev_states = {}
+        self._history     = []
 
     async def init(self):
         print("[renderer] init hardware...")
@@ -371,16 +378,30 @@ class DisplayRenderer:
             self._update_tab(i, sess)
             if sess:
                 self._update_history(i, sess)
+
+        # 状态跳变检测 → 触发语音
+        for sess in self._sessions:
+            cur = _sess_state(sess)
+            prev = self._prev_states.get(sess.name)
+            if cur != prev:
+                self._push_voice_history(sess, cur)
+                if cur in (S_DONE, S_ERROR, S_PENDING):
+                    await self._voice.trigger(self._history, sess, cur)
+                self._prev_states[sess.name] = cur
+
         self._update_main()
 
     async def on_connect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_ON, lv.PART.MAIN)
         _log.info("connected")
+        self._prev_states.clear()
+        asyncio.create_task(self._voice.trigger([], None, "connect", force=True))
 
     async def on_disconnect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_OFF, lv.PART.MAIN)
         _log.info("disconnected")
         self._sessions = []
+        self._prev_states.clear()
         self._update_main()
 
     # ── 主界面更新 ────────────────────────────────────────────
@@ -530,3 +551,12 @@ class DisplayRenderer:
         colon = msg.find(":")
         name  = msg[:colon] if colon > 0 else msg
         return name[:6]
+
+    def _push_voice_history(self, sess, state: str):
+        self._history.append({
+            "name":  sess.name,
+            "state": _STATE_LABEL_ZH.get(state, state),
+            "msg":   sess.msg or "",
+        })
+        if len(self._history) > cfg.VOICE_HISTORY_DEPTH:
+            self._history.pop(0)

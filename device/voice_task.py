@@ -17,9 +17,9 @@ class VoiceTask:
         self._queue: list = []
         self._i2s = machine.I2S(
             0,
-            sck=machine.Pin(cfg.CLOCK_SPK_BCLK),
-            ws=machine.Pin(cfg.CLOCK_SPK_LRC),
-            sd=machine.Pin(cfg.CLOCK_SPK_DIN),
+            sck=machine.Pin(cfg.SPK_BCLK),
+            ws=machine.Pin(cfg.SPK_LRC),
+            sd=machine.Pin(cfg.SPK_DIN),
             mode=machine.I2S.TX,
             bits=cfg.I2S_BITS,
             format=machine.I2S.MONO,
@@ -79,7 +79,7 @@ class VoiceTask:
         return cfg.VOICE_ASSETS_DIR + "/" + files[urandom.getrandbits(8) % len(files)]
 
     async def _play(self, path: str):
-        amp = machine.Pin(cfg.CLOCK_AMP_SD_PIN, machine.Pin.OUT)
+        amp = machine.Pin(cfg.AMP_SD_PIN, machine.Pin.OUT)
         amp.value(1)
         swriter = asyncio.StreamWriter(self._i2s)
         try:

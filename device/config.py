@@ -122,6 +122,12 @@ MAX_SESSIONS        = 5
 HISTORY_MAX_LEN     = 20
 BLINK_INTERVAL_S    = 0.4
 
+# ── 语音引脚别名（voice_task.py 统一使用，两版本共用）────────
+SPK_BCLK   = PANEL_SPK_SCK    if VARIANT == "panel" else CLOCK_SPK_BCLK
+SPK_LRC    = PANEL_SPK_WS     if VARIANT == "panel" else CLOCK_SPK_LRC
+SPK_DIN    = PANEL_SPK_SD     if VARIANT == "panel" else CLOCK_SPK_DIN
+AMP_SD_PIN = PANEL_AMP_SD_PIN if VARIANT == "panel" else CLOCK_AMP_SD_PIN
+
 # ── 日志配置 ──────────────────────────────────────────────────
 LOG_ENABLE = True       # True = 写文件；False = 走串口
 LOG_FILE   = "/log/run.log"
