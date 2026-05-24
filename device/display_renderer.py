@@ -465,10 +465,9 @@ class DisplayRenderer:
             self._stop_blink(index)
             return
         state     = _sess_state(sess)
-        tool_text = self._short_tool(index, sess)
         color_map = {S_ERROR: _C_TAB_ERR, S_WORKING: _C_TAB_WORK, S_DONE: _C_TAB_CELE}
         btn.set_style_bg_color(color_map.get(state, _C_TAB_IDLE), lv.PART.MAIN)
-        lbl.set_text(tool_text if state in (S_ERROR, S_WORKING, S_DONE) else sess.name)
+        lbl.set_text(sess.name)
         if state == S_ERROR:
             self._start_blink(index)
         else:
@@ -542,15 +541,6 @@ class DisplayRenderer:
                 await asyncio.sleep(cfg.BLINK_INTERVAL_S)
         except asyncio.CancelledError:
             pass
-
-    @staticmethod
-    def _short_tool(index: int, sess) -> str:
-        if not sess or not sess.msg:
-            return f"S{index+1}"
-        msg   = sess.msg
-        colon = msg.find(":")
-        name  = msg[:colon] if colon > 0 else msg
-        return name[:6]
 
     def _push_voice_history(self, sess, state: str):
         self._history.append({
