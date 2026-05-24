@@ -114,6 +114,7 @@ class DisplayRenderer:
         # Config 面板控件
         self._brightness_slider = None
         self._brightness_label  = None
+        self._storage_dd        = None
 
         # 共享
         self._sessions  = []
@@ -123,6 +124,9 @@ class DisplayRenderer:
         self._voice       = VoiceTask()
         self._prev_states = {}
         self._history     = []
+
+        # 槽位名记录（用于检测 session 变化）
+        self._slot_names = [""] * MAX_SESSIONS
 
     async def init(self):
         print("[renderer] init hardware...")
@@ -343,6 +347,29 @@ class DisplayRenderer:
         val_label.set_text("100%")
         self._brightness_label = val_label
 
+        # Clear Logs 按钮（绿色，放在日志存储选择上方）
+        btn_clear = lv.button(panel)
+        btn_clear.set_pos(0, 150)
+        btn_clear.set_size(140, 40)
+        btn_clear.set_style_bg_color(lv.color_hex(0x4CAF50), lv.PART.MAIN)
+        self._lbl_clear = lv.label(btn_clear)
+        self._lbl_clear.set_text("Clear Logs")
+        self._lbl_clear.center()
+        btn_clear.add_event_cb(self._on_clear_logs, lv.EVENT.CLICKED, None)
+
+        # Log Storage 下拉列表
+        storage_lbl = lv.label(panel)
+        storage_lbl.set_pos(0, 205)
+        storage_lbl.set_text("Log Storage:")
+
+        sd_opts = "Flash\nSD Card" if self._sd_available() else "Flash"
+        self._storage_dd = lv.dropdown(panel)
+        self._storage_dd.set_pos(0, 225)
+        self._storage_dd.set_size(160, 40)
+        self._storage_dd.set_options(sd_opts)
+        self._storage_dd.set_selected(0 if cfg.LOG_STORAGE == "flash" else 1)
+        self._storage_dd.add_event_cb(self._on_storage_change, lv.EVENT.VALUE_CHANGED, None)
+
         self._config_panel = panel
 
     # ── 面板切换 ──────────────────────────────────────────────
@@ -366,6 +393,66 @@ class DisplayRenderer:
         val = self._brightness_slider.get_value()
         self._disp.set_backlight(val)
         self._brightness_label.set_text(f"{val}%")
+
+    def _sd_available(self) -> bool:
+        try:
+            import os
+            os.stat("/sd")
+            return True
+        except OSError:
+            return False
+
+    def _on_storage_change(self, e):
+        idx = self._storage_dd.get_selected()
+        storage = "flash" if idx == 0 else "sd"
+        if storage == "sd" and not self._sd_available():
+            self._storage_dd.set_selected(0)
+            _log.info("SD card not available, fallback to flash")
+            return
+        self._save_config("LOG_STORAGE", storage)
+        print(f"[config] log storage -> {storage} (restart required)")
+        _log.info("log storage changed to %s (restart required)", storage)
+
+    def _save_config(self, key: str, value):
+        import os
+        try:
+            try:
+                import ujson
+            except ImportError:
+                import json as ujson
+            try:
+                with open("/config.json", "r") as f:
+                    cfg_data = ujson.load(f)
+            except OSError:
+                cfg_data = {}
+
+            cfg_data[key] = value
+
+            with open("/config.json", "w") as f:
+                ujson.dump(cfg_data, f)
+            _log.info("config saved: %s=%s", key, value)
+        except Exception as e:
+            _log.error("save config failed: %s", e)
+
+    def _on_clear_logs(self, e):
+        import os
+        if cfg.LOG_STORAGE == "sd" and self._sd_available():
+            paths = ["/sd/log/run.log", "/sd/log/prev_run.log"]
+        else:
+            paths = ["/log/run.log", "/log/prev_run.log"]
+
+        cleared = []
+        for path in paths:
+            try:
+                os.remove(path)
+                cleared.append(path)
+                _log.info("removed: %s", path)
+            except OSError:
+                pass
+
+        print(f"[config] clear logs: {cleared if cleared else 'nothing to clear'}")
+        self._lbl_clear.set_text("Cleared!")
+        lv.timer_create(lambda t: self._lbl_clear.set_text("Clear Logs"), 2000, None)
 
     # ── 渲染入口 ──────────────────────────────────────────────
 
@@ -463,7 +550,16 @@ class DisplayRenderer:
             btn.set_style_bg_color(_C_TAB_IDLE, lv.PART.MAIN)
             lbl.set_text(f"S{index+1}")
             self._stop_blink(index)
+            self._slot_names[index] = ""
             return
+
+        # 检测 session 名变化，自动清空历史
+        if sess.name != self._slot_names[index]:
+            self._histories[index].clear()
+            self._containers[index].clean()
+            self._slot_names[index] = sess.name
+            _log.info("slot[%d] session changed: %s", index, sess.name)
+
         state     = _sess_state(sess)
         color_map = {S_ERROR: _C_TAB_ERR, S_WORKING: _C_TAB_WORK, S_DONE: _C_TAB_CELE}
         btn.set_style_bg_color(color_map.get(state, _C_TAB_IDLE), lv.PART.MAIN)

@@ -61,6 +61,35 @@ async def _main():
     gc.collect()
     _log.info("startup: free=%d alloc=%d", gc.mem_free(), gc.mem_alloc())
 
+    # ── 挂载 SD 卡（面板版）──────────────────────────────────
+    if cfg.VARIANT == "panel":
+        try:
+            import machine, sdcard
+            sd_spi = machine.SPI(
+                cfg.PANEL_SD_SPI_BUS,
+                sck=machine.Pin(cfg.PANEL_SD_SCLK),
+                mosi=machine.Pin(cfg.PANEL_SD_MOSI),
+                miso=machine.Pin(cfg.PANEL_SD_MISO)
+            )
+            sd = sdcard.SDCard(sd_spi, machine.Pin(cfg.PANEL_SD_CS))
+            os.mount(sd, "/sd")
+            _log.info("SD card mounted at /sd")
+        except Exception as e:
+            _log.error("SD card mount failed: %s", e)
+
+    # ── 加载用户配置 ──────────────────────────────────────────
+    try:
+        with open("/config.json", "r") as f:
+            try:
+                import ujson
+            except ImportError:
+                import json as ujson
+            user_cfg = ujson.load(f)
+            cfg.LOG_STORAGE = user_cfg.get("LOG_STORAGE", cfg.LOG_STORAGE)
+            _log.info("user config loaded: LOG_STORAGE=%s", cfg.LOG_STORAGE)
+    except OSError:
+        _log.info("no user config, using defaults")
+
     if cfg.VARIANT == "clock":
         from light_renderer import LightRenderer
         _renderer = LightRenderer()

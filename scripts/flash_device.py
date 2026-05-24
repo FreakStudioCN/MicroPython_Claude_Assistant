@@ -9,6 +9,7 @@ import time
 import tempfile
 import argparse
 import serial.tools.list_ports
+from typing import Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEVICE_DIR = os.path.join(ROOT, "device")
@@ -35,16 +36,80 @@ def select_com_port() -> str:
         sys.exit(1)
 
 
-def run_mpremote(cmd: list[str]) -> str:
+def run_mpremote(cmd: list[str], timeout: int = 30) -> str:
     result = subprocess.run(
         ["mpremote", "connect", _COM_PORT] + cmd,
         capture_output=True, text=True, encoding="utf-8",
+        timeout=timeout,
     )
     if result.returncode != 0:
         print(f"[错误] mpremote 命令失败: {' '.join(cmd)}")
         print(result.stderr)
         sys.exit(1)
     return result.stdout.strip()
+
+
+def run_mpremote_safe(cmd: list[str]) -> Optional[str]:
+    """运行 mpremote 命令，失败时返回 None 而不退出。"""
+    try:
+        result = subprocess.run(
+            ["mpremote", "connect", _COM_PORT] + cmd,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+    except Exception as e:
+        print(f"[警告] mpremote 执行异常: {e}")
+        return None
+
+
+def get_remote_filenames(remote_dir: str) -> set[str]:
+    """获取设备端指定目录的文件名集合，目录不存在或出错返回空集合。"""
+    output = run_mpremote_safe(["fs", "ls", f":{remote_dir}"])
+    if output is None:
+        return set()
+    filenames = set()
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # 跳过 mpremote 输出的标题行，如 "ls :assets/" 或 "ls :"
+        if line.startswith("ls "):
+            continue
+        # 输出格式: "      1234 filename.ext"，取最后一个字段
+        parts = line.split()
+        if len(parts) >= 2:
+            filenames.add(parts[-1])
+        elif len(parts) == 1:
+            filenames.add(parts[0])
+    return filenames
+
+
+def assets_in_sync(local_assets_dir: str) -> bool:
+    """比对本地和设备端 assets 文件名集合，完全一致返回 True。"""
+    try:
+        local_files = set(
+            f for f in os.listdir(local_assets_dir)
+            if os.path.isfile(os.path.join(local_assets_dir, f))
+        )
+    except Exception as e:
+        print(f"[警告] 读取本地 assets 目录失败: {e}")
+        return False
+
+    remote_files = get_remote_filenames("assets")
+    in_sync = local_files == remote_files
+
+    if in_sync:
+        print(f"  → 设备端 assets 与本地一致（{len(local_files)} 个文件），跳过上传")
+    else:
+        added = local_files - remote_files
+        removed = remote_files - local_files
+        if added:
+            print(f"  → 本地新增: {', '.join(sorted(added))}")
+        if removed:
+            print(f"  → 设备端多余: {', '.join(sorted(removed))}")
+    return in_sync
 
 
 def check_mpy_cross() -> bool:
@@ -62,17 +127,52 @@ def compile_to_mpy(src_path: str, dest_path: str) -> bool:
         print(f"[警告] 编译失败: {src_path}")
         print(e.stderr.decode())
         return False
+    except FileNotFoundError:
+        print(f"[警告] mpy-cross 未找到，跳过编译: {src_path}")
+        return False
 
 
-def wipe_device():
-    print("[0/5] 清空设备文件系统...")
-    subprocess.run(["mpremote", "connect", _COM_PORT, "fs", "rm", "-r", "/"], capture_output=True)
+def wipe_device(step: str):
+    print(f"[{step}] 清空设备文件系统...")
+    # ESP32 不允许 rm -r :/ ，改为先 ls 根目录再逐项删除
+    try:
+        result = subprocess.run(
+            ["mpremote", "connect", _COM_PORT, "fs", "ls", ":"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if result.returncode != 0:
+            print(f"[警告] 获取根目录列表失败: {result.stderr.strip()}")
+            return
+        entries = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("ls "):
+                continue
+            parts = line.split()
+            if parts:
+                entries.append(parts[-1].rstrip("/"))
+        if not entries:
+            print("  → 设备文件系统已为空，跳过清空")
+            return
+        for entry in entries:
+            print(f"  → 删除 :{entry} ...")
+            r = subprocess.run(
+                ["mpremote", "connect", _COM_PORT, "fs", "rm", "-r", f":{entry}"],
+                capture_output=True, text=True, encoding="utf-8",
+            )
+            if r.returncode != 0:
+                print(f"  [警告] 删除 :{entry} 失败: {r.stderr.strip()}")
+            else:
+                print(f"  ✓ 已删除 :{entry}")
+        print("  ✓ 清空完成")
+    except Exception as e:
+        print(f"[错误] 清空设备失败: {e}")
+        sys.exit(1)
     time.sleep(1)
-    print("  ✓ 清空完成")
 
 
-def get_mac_address() -> str:
-    print("[1/5] 读取设备 MAC 地址...")
+def get_mac_address(step: str) -> str:
+    print(f"[{step}] 读取设备 MAC 地址...")
     code = (
         "import bluetooth\n"
         "ble = bluetooth.BLE()\n"
@@ -80,7 +180,11 @@ def get_mac_address() -> str:
         "mac = ble.config('mac')[1]\n"
         "print(''.join(f'{b:02X}' for b in mac[-2:]))\n"
     )
-    output = run_mpremote(["exec", code])
+    try:
+        output = run_mpremote(["exec", code])
+    except SystemExit:
+        print("[错误] 读取 MAC 地址失败，请检查设备连接")
+        sys.exit(1)
     mac_suffix = output.strip().split("\n")[-1]
     if len(mac_suffix) != 4 or not all(c in "0123456789ABCDEF" for c in mac_suffix):
         print(f"[错误] MAC 地址格式异常: {mac_suffix!r}")
@@ -89,94 +193,178 @@ def get_mac_address() -> str:
     return mac_suffix
 
 
-def generate_config(mac_suffix: str, variant: str) -> str:
-    print("[2/5] 生成 config.py...")
+def generate_config(mac_suffix: str, variant: str, step: str) -> str:
+    print(f"[{step}] 生成 config.py...")
     ble_name = f"Claude-Buddy-{mac_suffix}"
     src = os.path.join(DEVICE_DIR, "config.py")
-    with open(src, "r", encoding="utf-8") as f:
-        content = f.read()
+    try:
+        with open(src, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        print(f"[错误] 找不到 config.py: {src}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[错误] 读取 config.py 失败: {e}")
+        sys.exit(1)
     content = re.sub(r'^BLE_NAME\s*=.*$', f'BLE_NAME = "{ble_name}"', content, flags=re.MULTILINE)
     content = re.sub(r'^VARIANT\s*=.*$', f'VARIANT = "{variant}"', content, flags=re.MULTILINE)
     print(f"  → BLE_NAME = {ble_name!r}, VARIANT = {variant!r}")
     return content
 
 
-def install_libs():
-    print("[3/5] 安装依赖库（aioble）...")
-    run_mpremote(["mip", "install", "aioble"])
-    print("  ✓ aioble 安装完成")
+def install_libs(step: str):
+    print(f"[{step}] 安装依赖库（aioble）...")
+    try:
+        run_mpremote(["mip", "install", "aioble"])
+        print("  ✓ aioble 安装完成")
+    except SystemExit:
+        print("[错误] aioble 安装失败，请检查设备网络连接")
+        sys.exit(1)
 
 
-def upload_firmware(config_content: str):
-    print("[4/5] 编译并上传固件文件...")
+def upload_firmware(config_content: str, step: str, wiped: bool = False):
+    print(f"[{step}] 编译并上传固件文件...")
     use_mpy = check_mpy_cross()
     print(f"  {'✓ mpy-cross 可用' if use_mpy else '⚠ mpy-cross 未安装，上传源码'}")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        upload_list = []
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            upload_list = []
 
-        config_py = os.path.join(tmpdir, "config.py")
-        with open(config_py, "w", encoding="utf-8") as f:
-            f.write(config_content)
-        if use_mpy:
-            config_mpy = os.path.join(tmpdir, "config.mpy")
-            upload_list.append((config_mpy if compile_to_mpy(config_py, config_mpy) else config_py,
-                                 "config.mpy" if os.path.exists(os.path.join(tmpdir, "config.mpy")) else "config.py"))
-        else:
-            upload_list.append((config_py, "config.py"))
+            # config.py
+            config_py = os.path.join(tmpdir, "config.py")
+            try:
+                with open(config_py, "w", encoding="utf-8") as f:
+                    f.write(config_content)
+            except Exception as e:
+                print(f"[错误] 写入临时 config.py 失败: {e}")
+                sys.exit(1)
 
-        for fname in os.listdir(DEVICE_DIR):
-            if not fname.endswith(".py") or fname == "config.py":
-                continue
-            src = os.path.join(DEVICE_DIR, fname)
-            if not os.path.isfile(src):
-                continue
-            if fname == ENTRY_FILE:
-                upload_list.append((src, fname))
-                continue
             if use_mpy:
-                mpy_name = fname.replace(".py", ".mpy")
-                mpy_path = os.path.join(tmpdir, mpy_name)
-                upload_list.append((mpy_path if compile_to_mpy(src, mpy_path) else src,
-                                     mpy_name if os.path.exists(mpy_path) else fname))
+                config_mpy = os.path.join(tmpdir, "config.mpy")
+                if compile_to_mpy(config_py, config_mpy):
+                    upload_list.append((config_mpy, "config.mpy"))
+                else:
+                    upload_list.append((config_py, "config.py"))
             else:
-                upload_list.append((src, fname))
+                upload_list.append((config_py, "config.py"))
 
-        for local_path, remote_name in upload_list:
-            run_mpremote(["cp", local_path, f":{remote_name}"])
-            print(f"  ✓ {remote_name} ({os.path.getsize(local_path)/1024:.1f} KB)")
+            # device/*.py
+            try:
+                py_files = [
+                    f for f in os.listdir(DEVICE_DIR)
+                    if f.endswith(".py") and f != "config.py" and os.path.isfile(os.path.join(DEVICE_DIR, f))
+                ]
+            except Exception as e:
+                print(f"[错误] 读取设备目录失败: {e}")
+                sys.exit(1)
 
-        lib_dir = os.path.join(DEVICE_DIR, "lib")
-        if os.path.isdir(lib_dir):
-            subprocess.run(["mpremote", "connect", _COM_PORT, "mkdir", ":lib"], capture_output=True)
-            for fname in sorted(os.listdir(lib_dir)):
-                src = os.path.join(lib_dir, fname)
-                if not os.path.isfile(src) or not fname.endswith(".py"):
+            for fname in py_files:
+                src = os.path.join(DEVICE_DIR, fname)
+                if fname == ENTRY_FILE:
+                    upload_list.append((src, fname))
                     continue
                 if use_mpy:
                     mpy_name = fname.replace(".py", ".mpy")
                     mpy_path = os.path.join(tmpdir, mpy_name)
-                    ok = compile_to_mpy(src, mpy_path)
-                    local, remote = (mpy_path if ok else src, f"lib/{mpy_name}" if ok else f"lib/{fname}")
+                    if compile_to_mpy(src, mpy_path):
+                        upload_list.append((mpy_path, mpy_name))
+                    else:
+                        upload_list.append((src, fname))
                 else:
-                    local, remote = src, f"lib/{fname}"
-                run_mpremote(["cp", local, f":{remote}"])
-                print(f"  ✓ {remote} ({os.path.getsize(local)/1024:.1f} KB)")
+                    upload_list.append((src, fname))
 
-        assets_dir = os.path.join(DEVICE_DIR, "assets")
-        if os.path.isdir(assets_dir):
-            subprocess.run(["mpremote", "connect", _COM_PORT, "mkdir", ":assets"], capture_output=True)
-            for fname in sorted(os.listdir(assets_dir)):
-                src = os.path.join(assets_dir, fname)
-                if os.path.isfile(src):
-                    run_mpremote(["cp", src, f":assets/{fname}"])
-                    print(f"  ✓ assets/{fname} ({os.path.getsize(src)/1024:.1f} KB)")
+            for local_path, remote_name in upload_list:
+                try:
+                    run_mpremote(["cp", local_path, f":{remote_name}"])
+                    print(f"  ✓ {remote_name} ({os.path.getsize(local_path)/1024:.1f} KB)")
+                except SystemExit:
+                    print(f"[错误] 上传失败: {remote_name}")
+                    sys.exit(1)
+
+            # lib/
+            lib_dir = os.path.join(DEVICE_DIR, "lib")
+            if os.path.isdir(lib_dir):
+                subprocess.run(["mpremote", "connect", _COM_PORT, "fs", "mkdir", ":lib"], capture_output=True)
+                try:
+                    lib_files = sorted(
+                        f for f in os.listdir(lib_dir)
+                        if os.path.isfile(os.path.join(lib_dir, f)) and f.endswith(".py")
+                    )
+                except Exception as e:
+                    print(f"[警告] 读取 lib 目录失败: {e}")
+                    lib_files = []
+
+                for fname in lib_files:
+                    src = os.path.join(lib_dir, fname)
+                    if use_mpy:
+                        mpy_name = fname.replace(".py", ".mpy")
+                        mpy_path = os.path.join(tmpdir, mpy_name)
+                        if compile_to_mpy(src, mpy_path):
+                            local, remote = mpy_path, f"lib/{mpy_name}"
+                        else:
+                            local, remote = src, f"lib/{fname}"
+                    else:
+                        local, remote = src, f"lib/{fname}"
+                    try:
+                        run_mpremote(["cp", local, f":{remote}"])
+                        print(f"  ✓ {remote} ({os.path.getsize(local)/1024:.1f} KB)")
+                    except SystemExit:
+                        print(f"[错误] 上传失败: {remote}")
+                        sys.exit(1)
+
+            # assets/
+            assets_dir = os.path.join(DEVICE_DIR, "assets")
+            if os.path.isdir(assets_dir):
+                print("  检查 assets 目录...")
+                if not wiped and assets_in_sync(assets_dir):
+                    pass  # 已在 assets_in_sync 内打印跳过提示
+                else:
+                    print("  → 开始上传 assets...")
+                    subprocess.run(
+                        ["mpremote", "connect", _COM_PORT, "fs", "mkdir", ":assets"],
+                        capture_output=True,
+                    )
+                    try:
+                        asset_files = sorted(
+                            f for f in os.listdir(assets_dir)
+                            if os.path.isfile(os.path.join(assets_dir, f))
+                        )
+                    except Exception as e:
+                        print(f"[错误] 读取本地 assets 目录失败: {e}")
+                        sys.exit(1)
+
+                    # 逐文件上传
+                    for fname in asset_files:
+                        src = os.path.join(assets_dir, fname)
+                        remote = f"assets/{fname}"
+                        size_kb = os.path.getsize(src) / 1024
+                        cp_timeout = max(120, int(size_kb / 5) + 30)
+                        try:
+                            run_mpremote(["cp", src, f":{remote}"], timeout=cp_timeout)
+                            print(f"  ✓ {remote} ({size_kb:.1f} KB)")
+                        except subprocess.TimeoutExpired:
+                            print(f"[错误] 上传超时: {fname}（{size_kb:.1f} KB，超过 {cp_timeout}s）")
+                            sys.exit(1)
+                        except SystemExit:
+                            print(f"[错误] 上传失败: {fname}")
+                            sys.exit(1)
+
+    except Exception as e:
+        print(f"[错误] 上传固件过程中发生未预期异常: {e}")
+        sys.exit(1)
 
 
-def reset_device():
-    print("[5/5] 重启设备...")
-    subprocess.run(["mpremote", "connect", _COM_PORT, "reset"], capture_output=True)
-    print("  ✓ 设备已重启")
+def reset_device(step: str):
+    print(f"[{step}] 重启设备...")
+    try:
+        subprocess.run(
+            ["mpremote", "connect", _COM_PORT, "reset"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        print("  ✓ 设备已重启")
+    except Exception as e:
+        print(f"[警告] 重启设备失败: {e}")
 
 
 def main():
@@ -187,17 +375,27 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--variant", choices=["panel", "clock"], default="panel")
+    parser.add_argument("--wipe", action="store_true", help="烧录前清空设备文件系统（危险：不可恢复）")
     args = parser.parse_args()
 
-    _COM_PORT = select_com_port()
+    try:
+        _COM_PORT = select_com_port()
+    except Exception as e:
+        print(f"[错误] 串口选择失败: {e}")
+        sys.exit(1)
     print(f"  → 使用串口: {_COM_PORT}")
 
-    wipe_device()
-    mac_suffix = get_mac_address()
-    config_content = generate_config(mac_suffix, args.variant)
-    install_libs()
-    upload_firmware(config_content)
-    reset_device()
+    step = 0
+
+    if args.wipe:
+        wipe_device(str(step))
+        step += 1
+
+    mac_suffix = get_mac_address(str(step)); step += 1
+    config_content = generate_config(mac_suffix, args.variant, str(step)); step += 1
+    install_libs(str(step)); step += 1
+    upload_firmware(config_content, str(step), wiped=args.wipe); step += 1
+    reset_device(str(step))
 
     print("\n" + "=" * 50)
     print(f"✓ 烧录完成！设备名称: Claude-Buddy-{mac_suffix}  型号: {args.variant}")

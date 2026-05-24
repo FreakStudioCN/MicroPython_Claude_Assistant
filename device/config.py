@@ -57,6 +57,13 @@ PANEL_SPK_SD       = 16
 PANEL_AMP_SD_PIN   = 17
 PANEL_AMP_GAIN_PIN = 18
 
+# ── SD 卡（SPI，面板版）─────────────────────────────────────
+PANEL_SD_SPI_BUS = 1        # SPI 外设编号（1 或 2，避开屏幕的 SPI 2）
+PANEL_SD_MOSI    = 38
+PANEL_SD_SCLK    = 39
+PANEL_SD_MISO    = 40
+PANEL_SD_CS      = 41
+
 # ============================================================
 # 不带屏幕版（闹钟版）引脚
 # ============================================================
@@ -129,7 +136,8 @@ SPK_DIN    = PANEL_SPK_SD     if VARIANT == "panel" else CLOCK_SPK_DIN
 AMP_SD_PIN = PANEL_AMP_SD_PIN if VARIANT == "panel" else CLOCK_AMP_SD_PIN
 
 # ── 日志配置 ──────────────────────────────────────────────────
-LOG_ENABLE = True       # True = 写文件；False = 走串口
-LOG_FILE   = "/log/run.log"
-LOG_LEVEL  = 20         # INFO=20, DEBUG=10
+LOG_ENABLE  = True       # True = 写文件；False = 走串口
+LOG_STORAGE = "flash"    # "flash" | "sd"
+LOG_FILE    = "/log/run.log"
+LOG_LEVEL   = 20         # INFO=20, DEBUG=10
 
