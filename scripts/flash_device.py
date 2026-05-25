@@ -377,9 +377,39 @@ def main():
     print("ESP32 固件烧录工具（MAC 自动命名）")
     print("=" * 50)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--variant", choices=["panel", "clock"], default="panel")
-    parser.add_argument("--wipe", action="store_true", help="烧录前清空设备文件系统（危险：不可恢复）")
+    parser = argparse.ArgumentParser(
+        prog="flash_device.py",
+        description="将 MicroPython 固件烧录到 ESP32 设备（panel 面板版 / clock 闹钟版）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+用法示例：
+  python scripts/flash_device.py                        # 烧录面板版（默认）
+  python scripts/flash_device.py --variant clock        # 烧录闹钟版
+  python scripts/flash_device.py --variant panel --wipe # 面板版，先清空文件系统
+
+切换面板角色：
+  1. 修改 device/config.py 中的 CHARACTER 字段：
+       CHARACTER = "kirby"   # claude/cat/robot/ghost/among_us/creeper/kirby/pikachu
+  2. 重新运行烧录命令，脚本自动读取并只上传对应角色文件
+
+切换语音音色（clock 形态）：
+  1. 运行 python scripts/gen_voice_assets.py 生成新 PCM 文件
+  2. 文件自动保存到 device/assets/，重新烧录时一并上传
+
+预览面板角色（无需设备）：
+  pip install Pillow
+  python scripts/preview_character.py                        # 生成所有角色预览图
+  python scripts/preview_character.py --char kirby pikachu   # 只预览指定角色
+
+参数说明：
+  --variant   目标设备型号：panel（ESP32-S3 + 屏幕）| clock（ESP32-C3 + 灯光）
+  --wipe      烧录前清空设备文件系统（首次烧录或切换 variant 时建议使用，不可恢复）
+        """,
+    )
+    parser.add_argument("--variant", choices=["panel", "clock"], default="panel",
+                        help="目标型号：panel（面板版）| clock（闹钟版），默认 panel")
+    parser.add_argument("--wipe", action="store_true",
+                        help="烧录前清空设备文件系统（危险：不可恢复）")
     args = parser.parse_args()
 
     # 从本地 config.py 读取 CHARACTER
