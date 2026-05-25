@@ -8,6 +8,10 @@
 # ── 设备型号（烧录时由 flash_device.py 注入）─────────────────
 VARIANT = "panel"  # "panel" | "clock"
 
+# ── 面板角色（可选值见 device/char_*.py）─────────────────────
+# claude / cat / robot / ghost / among_us / creeper / kirby / pikachu
+CHARACTER = "robot"
+
 # ── 共用：BLE 配置 ────────────────────────────────────────────
 BLE_NAME    = "Claude-Buddy"
 NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"

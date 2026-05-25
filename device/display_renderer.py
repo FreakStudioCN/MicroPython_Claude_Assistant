@@ -21,7 +21,8 @@ import cst816s
 import task_handler
 from micropython import const
 import config as cfg
-from character import ClaudeCharacter  # 换形象只改这一行
+_char_mod = __import__("char_" + cfg.CHARACTER) if cfg.CHARACTER != "claude" else None
+_CharClass = getattr(_char_mod, "".join(w[0].upper() + w[1:] for w in cfg.CHARACTER.split("_")) + "Character") if _char_mod else __import__("character").ClaudeCharacter
 from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
 from voice_task import VoiceTask
 import logging
@@ -95,7 +96,7 @@ class DisplayRenderer:
 
         # 主界面控件
         self._ble_dot      = None
-        self._character    = ClaudeCharacter()
+        self._character    = _CharClass()
         self._logo_timer   = None
         self._logo_frame   = 0
         self._logo_state   = S_IDLE

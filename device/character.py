@@ -34,6 +34,10 @@ class Character:
     def tick(self, state, frame):
         raise NotImplementedError
 
+    def apply_swing(self, ox, oy):
+        for i, o in enumerate(self._objs):
+            o.set_pos(self._bx[i] + ox, self._by[i] + oy)
+
 
 # ── Claude Code 像素风角色 ────────────────────────────────────
 

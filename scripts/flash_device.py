@@ -193,7 +193,7 @@ def get_mac_address(step: str) -> str:
     return mac_suffix
 
 
-def generate_config(mac_suffix: str, variant: str, step: str) -> str:
+def generate_config(mac_suffix: str, variant: str, character: str, step: str) -> str:
     print(f"[{step}] 生成 config.py...")
     ble_name = f"Claude-Buddy-{mac_suffix}"
     src = os.path.join(DEVICE_DIR, "config.py")
@@ -208,7 +208,8 @@ def generate_config(mac_suffix: str, variant: str, step: str) -> str:
         sys.exit(1)
     content = re.sub(r'^BLE_NAME\s*=.*$', f'BLE_NAME = "{ble_name}"', content, flags=re.MULTILINE)
     content = re.sub(r'^VARIANT\s*=.*$', f'VARIANT = "{variant}"', content, flags=re.MULTILINE)
-    print(f"  → BLE_NAME = {ble_name!r}, VARIANT = {variant!r}")
+    content = re.sub(r'^CHARACTER\s*=.*$', f'CHARACTER = "{character}"', content, flags=re.MULTILINE)
+    print(f"  → BLE_NAME = {ble_name!r}, VARIANT = {variant!r}, CHARACTER = {character!r}")
     return content
 
 
@@ -222,7 +223,7 @@ def install_libs(step: str):
         sys.exit(1)
 
 
-def upload_firmware(config_content: str, step: str, wiped: bool = False):
+def upload_firmware(config_content: str, step: str, wiped: bool = False, character: str = "claude"):
     print(f"[{step}] 编译并上传固件文件...")
     use_mpy = check_mpy_cross()
     print(f"  {'✓ mpy-cross 可用' if use_mpy else '⚠ mpy-cross 未安装，上传源码'}")
@@ -249,11 +250,14 @@ def upload_firmware(config_content: str, step: str, wiped: bool = False):
             else:
                 upload_list.append((config_py, "config.py"))
 
-            # device/*.py
+            # device/*.py（char_*.py 只上传选中的那个）
+            needed_char = f"char_{character}.py"
             try:
                 py_files = [
                     f for f in os.listdir(DEVICE_DIR)
-                    if f.endswith(".py") and f != "config.py" and os.path.isfile(os.path.join(DEVICE_DIR, f))
+                    if f.endswith(".py") and f != "config.py"
+                    and os.path.isfile(os.path.join(DEVICE_DIR, f))
+                    and (not f.startswith("char_") or f == needed_char)
                 ]
             except Exception as e:
                 print(f"[错误] 读取设备目录失败: {e}")
@@ -378,6 +382,14 @@ def main():
     parser.add_argument("--wipe", action="store_true", help="烧录前清空设备文件系统（危险：不可恢复）")
     args = parser.parse_args()
 
+    # 从本地 config.py 读取 CHARACTER
+    config_src = os.path.join(DEVICE_DIR, "config.py")
+    with open(config_src, "r", encoding="utf-8") as f:
+        _cfg_text = f.read()
+    _m = re.search(r'^CHARACTER\s*=\s*["\']?(\w+)["\']?', _cfg_text, re.MULTILINE)
+    character = _m.group(1) if _m else "claude"
+    print(f"  → 角色: {character}（来自 config.py）")
+
     try:
         _COM_PORT = select_com_port()
     except Exception as e:
@@ -392,13 +404,13 @@ def main():
         step += 1
 
     mac_suffix = get_mac_address(str(step)); step += 1
-    config_content = generate_config(mac_suffix, args.variant, str(step)); step += 1
+    config_content = generate_config(mac_suffix, args.variant, character, str(step)); step += 1
     install_libs(str(step)); step += 1
-    upload_firmware(config_content, str(step), wiped=args.wipe); step += 1
+    upload_firmware(config_content, str(step), wiped=args.wipe, character=character); step += 1
     reset_device(str(step))
 
     print("\n" + "=" * 50)
-    print(f"✓ 烧录完成！设备名称: Claude-Buddy-{mac_suffix}  型号: {args.variant}")
+    print(f"✓ 烧录完成！设备名称: Claude-Buddy-{mac_suffix}  型号: {args.variant}  角色: {character}")
     print("=" * 50)
 
 
