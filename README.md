@@ -68,7 +68,6 @@ MicroPython_Claude_Assistant/
 │   ├── char_kirby.py        # 预设角色：星之卡比
 │   ├── char_pikachu.py      # 预设角色：皮卡丘
 │   ├── logo_data.py         # 像素风Claude Logo数据
-│   ├── play_pcm_loop.py     # 调试用：独立PCM循环播放测试
 │   ├── queue.py             # asyncio Queue兼容层（MicroPython）
 │   ├── lib/aioble/          # aioble BLE库（预装，烧录时由flash_device.py安装）
 │   └── assets/              # TTS语音PCM文件（8kHz单声道16bit）
