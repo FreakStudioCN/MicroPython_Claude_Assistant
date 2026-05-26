@@ -171,6 +171,10 @@ def _session_to_wire(sid: str, sess: _Session) -> dict:
     now = time.time()
     result = {"n": sess.display_name or "?"}
 
+    # v6 协议：计算 slot 标识（SID 后 8 位）
+    compact_sid = sid.replace("-", "")
+    result["slot"] = compact_sid[-8:] if len(compact_sid) >= 8 else compact_sid
+
     if sess.dizzy_until > now:
         result["s"] = "E"
         return result

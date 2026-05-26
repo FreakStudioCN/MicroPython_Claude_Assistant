@@ -3,11 +3,12 @@
 #
 # 所有消息均为换行符结尾的 JSON 字符串，通过 BLE NUS 传输。
 #
-# PC → 设备（v5 多 session wire）：
-#   {"ss": [{"n": "proj", "s": "W", "m": "Bash: ls"}]}
+# PC → 设备（v6 多 session wire）：
+#   {"ss": [{"n": "proj", "s": "W", "m": "Bash: ls", "slot": "cd501167"}]}
 #   ss 数组只含活跃 session（有工具运行，或近 10s 内有活动）。
 #   s 字段：I=空闲 / W=执行中 / P=待审批提醒 / C=完成 / E=出错
 #   m 字段：工具名或状态描述（可选）
+#   slot 字段：session 唯一标识（SID 后 8 位），用于槽位稳定映射
 #
 # PC → 设备（控制命令）：
 #   {"cmd": "name"/"owner"/"unpair"}
@@ -27,10 +28,11 @@ from state import S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
 
 
 class SessionStatus:
-    """v5 wire 中单个 session 的状态（从 s 字段推导所有属性）。"""
+    """v6 wire 中单个 session 的状态（从 s 字段推导所有属性）。"""
     def __init__(self, d: dict):
         s = d.get("s", S_IDLE)
         self.name        = d.get("n", "?")
+        self.slot        = d.get("slot", "")  # v6 新增：session 唯一标识（SID 后 8 位）
         self.running     = 1 if s == S_WORKING else 0
         self.waiting     = 1 if s == S_PENDING else 0
         self.completed   = s == S_DONE
