@@ -12,6 +12,7 @@ try:
 except ImportError:
     import asyncio
 
+import time
 import machine
 import lcd_bus
 import lvgl as lv
@@ -128,6 +129,10 @@ class DisplayRenderer:
 
         # 槽位名记录（用于检测 session 变化）
         self._slot_names = [""] * MAX_SESSIONS
+
+        # v6 协议：slot_id → 槽位编号 的映射（长期记忆）
+        self._slot_assignments = {}  # slot_id(str) → slot_index(int)
+        self._slot_last_used = [0] * MAX_SESSIONS  # LRU：每槽最后更新时间
 
         # 长按 guard：吃掉长按后紧随的 CLICKED
         self._tab_long_pressed = [False] * MAX_SESSIONS
@@ -479,15 +484,35 @@ class DisplayRenderer:
     async def render(self, msg):
         if msg is None or isinstance(msg, dict):
             return
-        self._sessions = msg.sessions[:MAX_SESSIONS]
-        for i in range(MAX_SESSIONS):
-            sess = self._sessions[i] if i < len(self._sessions) else None
-            self._update_tab(i, sess)
-            if sess:
-                self._update_history(i, sess)
 
-        # 状态跳变检测 → 触发语音
-        for sess in self._sessions:
+        # v6 协议：按 slot 字段映射，不再按数组下标
+        slot_updated = [False] * MAX_SESSIONS
+        ordered_sessions = [None] * MAX_SESSIONS  # 按槽位顺序重建 sessions 列表
+
+        for sess in msg.sessions:
+            slot_id = sess.slot
+            if not slot_id:  # 向后兼容：无 slot 字段时跳过
+                continue
+
+            # 查找或分配槽位
+            if slot_id in self._slot_assignments:
+                slot_index = self._slot_assignments[slot_id]
+                _log.info("slot[%d] cache hit slot_id=%s name=%s", slot_index, slot_id, sess.name)
+            else:
+                slot_index = self._find_empty_slot()
+                if slot_index is None:
+                    continue
+                self._slot_assignments[slot_id] = slot_index
+                _log.info("slot[%d] assigned to slot_id=%s", slot_index, slot_id)
+
+            # 更新槽位
+            self._update_tab(slot_index, sess)
+            self._update_history(slot_index, sess)
+            self._slot_last_used[slot_index] = time.ticks_ms()
+            slot_updated[slot_index] = True
+            ordered_sessions[slot_index] = sess  # 按槽位顺序记录
+
+            # 状态跳变检测 → 触发语音
             cur = _sess_state(sess)
             prev = self._prev_states.get(sess.name)
             if cur != prev:
@@ -496,7 +521,29 @@ class DisplayRenderer:
                     await self._voice.trigger(self._history, sess, cur)
                 self._prev_states[sess.name] = cur
 
+        # 清空未更新的槽（wire 里没有的 session），并释放映射
+        for i in range(MAX_SESSIONS):
+            if not slot_updated[i]:
+                self._update_tab(i, None)
+                for slot_id, idx in list(self._slot_assignments.items()):
+                    if idx == i:
+                        del self._slot_assignments[slot_id]
+                        _log.info("slot[%d] released, slot_id=%s removed", i, slot_id)
+                        break
+
+        # 更新 self._sessions 为按槽位顺序的列表（供 _update_main 使用）
+        self._sessions = [s for s in ordered_sessions if s is not None]
+
         self._update_main()
+
+    def _find_empty_slot(self):
+        """找第一个未被任何 slot_id 占用的槽，满了返回 None。"""
+        occupied = set(self._slot_assignments.values())
+        for i in range(MAX_SESSIONS):
+            if i not in occupied:
+                return i
+        _log.warning("all slots full, session skipped")
+        return None
 
     async def on_connect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_ON, lv.PART.MAIN)
@@ -570,7 +617,7 @@ class DisplayRenderer:
             btn.set_style_bg_color(_C_TAB_IDLE, lv.PART.MAIN)
             lbl.set_text(f"S{index+1}")
             self._stop_blink(index)
-            self._slot_names[index] = ""
+            # v6 修复：不清除 slot_names，保留原名字，避免重连时误清历史
             return
 
         # 检测 session 名变化，自动清空历史

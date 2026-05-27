@@ -1328,6 +1328,296 @@ GUI_DISPLAY_NAME_CONFLICT_SEQUENCE = [
     ("S4: Stop", "Stop.json", {"session_id": "gui_dnc_s4"}),
 ]
 
+# ── v6 槽位稳定性测试序列 ──────────────────────────────────
+# 验证 v6 协议：session 沉默 >10s 后重连，槽位不漂移，历史不清空
+V6_SLOT_STABILITY_SEQUENCE = [
+    # Session A 和 B 同时启动
+    ("A: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",  # 固定 SID
+        "cwd": "G:\\test",
+        "prompt": "Read test.py"
+    }),
+    ("A: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",
+        "cwd": "G:\\test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_A_READ1",
+        "tool_input": {"file_path": "test.py"}
+    }),
+    ("A: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",
+        "cwd": "G:\\test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_A_READ1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("A: Stop", "Stop.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",
+        "cwd": "G:\\test"
+    }),
+
+    ("B: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "9432b9ea-7c5c-4ed0-9275-e301da4e2855",
+        "cwd": "G:\\MicroPython_Claude_Assistant",
+        "prompt": "List files"
+    }),
+    ("B: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "9432b9ea-7c5c-4ed0-9275-e301da4e2855",
+        "cwd": "G:\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_B_BASH1",
+        "tool_input": {"command": "ls"}
+    }),
+    ("B: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "9432b9ea-7c5c-4ed0-9275-e301da4e2855",
+        "cwd": "G:\\MicroPython_Claude_Assistant",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_B_BASH1",
+        "tool_response": {"interrupted": False}
+    }),
+    ("B: Stop", "Stop.json", {
+        "session_id": "9432b9ea-7c5c-4ed0-9275-e301da4e2855",
+        "cwd": "G:\\MicroPython_Claude_Assistant"
+    }),
+
+    # 等待 12 秒（让 A 超时被清理）
+    ("WAIT 12s for A cleanup", None, {"sleep": 12}),
+
+    # A 重新活跃（同一个 SID）
+    ("A: UserPromptSubmit(reconnect)", "UserPromptSubmit.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",  # 同一个 SID
+        "cwd": "G:\\test",
+        "prompt": "Read another file"
+    }),
+    ("A: PreToolUse(Read-2)", "PreToolUse.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",
+        "cwd": "G:\\test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_A_READ2",
+        "tool_input": {"file_path": "main.py"}
+    }),
+    ("A: PostToolUse(Read-2)", "PostToolUse.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",
+        "cwd": "G:\\test",
+        "tool_name": "Read",
+        "tool_use_id": "toolu_A_READ2",
+        "tool_response": {"interrupted": False}
+    }),
+    ("A: Stop", "Stop.json", {
+        "session_id": "27f7bc8f-cc50-409b-95e3-14b498641167",
+        "cwd": "G:\\test"
+    }),
+]
+
+# ── v6 同 cwd 多窗口序列 ──────────────────────────────────
+# 验证同一 cwd 下 3 个不同 SID 各占独立槽位，互不冲突
+V6_SAME_CWD_MULTI_SEQUENCE = [
+    ("W1: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "aaaaaaaa-0000-0000-0000-000000000001",
+        "cwd": "G:\\test", "prompt": "Window 1"
+    }),
+    ("W1: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "aaaaaaaa-0000-0000-0000-000000000001",
+        "cwd": "G:\\test", "tool_name": "Read",
+        "tool_use_id": "toolu_W1_R1", "tool_input": {"file_path": "a.py"}
+    }),
+    ("W2: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "bbbbbbbb-0000-0000-0000-000000000002",
+        "cwd": "G:\\test", "prompt": "Window 2"
+    }),
+    ("W2: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "bbbbbbbb-0000-0000-0000-000000000002",
+        "cwd": "G:\\test", "tool_name": "Bash",
+        "tool_use_id": "toolu_W2_B1", "tool_input": {"command": "ls"}
+    }),
+    ("W3: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "cccccccc-0000-0000-0000-000000000003",
+        "cwd": "G:\\test", "prompt": "Window 3"
+    }),
+    ("W3: PreToolUse(Grep)", "PreToolUse.json", {
+        "session_id": "cccccccc-0000-0000-0000-000000000003",
+        "cwd": "G:\\test", "tool_name": "Grep",
+        "tool_use_id": "toolu_W3_G1", "tool_input": {"pattern": "TODO"}
+    }),
+    # [期望] S1=test(W1) S2=test(W2) S3=test(W3)，三个槽各自独立
+    ("W1: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "aaaaaaaa-0000-0000-0000-000000000001",
+        "cwd": "G:\\test", "tool_name": "Read",
+        "tool_use_id": "toolu_W1_R1", "tool_response": {"interrupted": False}
+    }),
+    ("W1: Stop", "Stop.json", {"session_id": "aaaaaaaa-0000-0000-0000-000000000001", "cwd": "G:\\test"}),
+    # W1 沉默 12s 后重连，验证回到原槽位
+    ("WAIT 12s for W1 cleanup", None, {"sleep": 12}),
+    ("W1: UserPromptSubmit(reconnect)", "UserPromptSubmit.json", {
+        "session_id": "aaaaaaaa-0000-0000-0000-000000000001",
+        "cwd": "G:\\test", "prompt": "Window 1 reconnect"
+    }),
+    ("W1: PreToolUse(Read-2)", "PreToolUse.json", {
+        "session_id": "aaaaaaaa-0000-0000-0000-000000000001",
+        "cwd": "G:\\test", "tool_name": "Read",
+        "tool_use_id": "toolu_W1_R2", "tool_input": {"file_path": "b.py"}
+    }),
+    ("W1: Stop", "Stop.json", {"session_id": "aaaaaaaa-0000-0000-0000-000000000001", "cwd": "G:\\test"}),
+    # [期望] W1 回到 S1（原槽位），无 session changed，历史保留
+    ("W2: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "bbbbbbbb-0000-0000-0000-000000000002",
+        "cwd": "G:\\test", "tool_name": "Bash",
+        "tool_use_id": "toolu_W2_B1", "tool_response": {"interrupted": False}
+    }),
+    ("W2: Stop", "Stop.json", {"session_id": "bbbbbbbb-0000-0000-0000-000000000002", "cwd": "G:\\test"}),
+    ("W3: PostToolUse(Grep)", "PostToolUse.json", {
+        "session_id": "cccccccc-0000-0000-0000-000000000003",
+        "cwd": "G:\\test", "tool_name": "Grep",
+        "tool_use_id": "toolu_W3_G1", "tool_response": {"interrupted": False}
+    }),
+    ("W3: Stop", "Stop.json", {"session_id": "cccccccc-0000-0000-0000-000000000003", "cwd": "G:\\test"}),
+]
+
+# ── v6 15 session 综合压力测试 ────────────────────────────
+# 验证槽位分配、沉默重连、满槽处理的完整流程
+V6_COMPREHENSIVE_SEQUENCE = [
+    # === 阶段 1：填满 5 个槽 ===
+    *[
+        (f"S{i}: UserPromptSubmit", "UserPromptSubmit.json", {
+            "session_id": f"comp-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "prompt": f"Task {i}"
+        })
+        for i in range(1, 6)
+    ],
+    *[
+        (f"S{i}: PreToolUse(Read)", "PreToolUse.json", {
+            "session_id": f"comp-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "tool_name": "Read",
+            "tool_use_id": f"toolu_C_R{i}", "tool_input": {"file_path": "main.py"}
+        })
+        for i in range(1, 6)
+    ],
+    # [期望] slot[0~4] 各占一个 session (proj1~proj5)
+
+    # === 阶段 2：proj3 沉默 >10s ===
+    *[
+        (f"S{i}: PostToolUse", "PostToolUse.json", {
+            "session_id": f"comp-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "tool_name": "Read",
+            "tool_use_id": f"toolu_C_R{i}", "tool_response": {"interrupted": False}
+        })
+        for i in range(1, 6)
+    ],
+    *[
+        (f"S{i}: Stop", "Stop.json", {
+            "session_id": f"comp-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}"
+        })
+        for i in range(1, 6)
+    ],
+    ("WAIT 12s for proj3 cleanup", None, {"sleep": 12}),
+    # [期望] wire 里只剩 4 个 session，slot[2] 显示空闲但映射表还记得 proj3
+
+    # === 阶段 3：6~10 号 session 来了（5 个新 session） ===
+    *[
+        (f"S{i}: UserPromptSubmit", "UserPromptSubmit.json", {
+            "session_id": f"comp-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "prompt": f"Task {i}"
+        })
+        for i in range(6, 11)
+    ],
+    # [期望] proj6 占 slot[2]（proj3 的位置），proj7~10 被跳过（槽满）
+
+    # === 阶段 4：proj3 重连 ===
+    ("S3: UserPromptSubmit(reconnect)", "UserPromptSubmit.json", {
+        "session_id": "comp-0003-0000-0000-0000-000000000003",
+        "cwd": "G:\\proj3", "prompt": "proj3 reconnect"
+    }),
+    # [期望] proj3 发现 slot[2] 被 proj6 占了，找不到空槽，被跳过
+
+    # === 阶段 5：proj1 沉默 >10s ===
+    ("S1: Stop", "Stop.json", {
+        "session_id": "comp-0001-0000-0000-0000-000000000001",
+        "cwd": "G:\\proj1"
+    }),
+    ("WAIT 12s for proj1 cleanup", None, {"sleep": 12}),
+    # [期望] slot[0] 显示空闲，映射表还记得 proj1
+
+    # === 阶段 6：11~15 号 session 来了 ===
+    *[
+        (f"S{i}: UserPromptSubmit", "UserPromptSubmit.json", {
+            "session_id": f"comp-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "prompt": f"Task {i}"
+        })
+        for i in range(11, 16)
+    ],
+    # [期望] proj11 占 slot[0]（proj1 的位置），proj12~15 被跳过
+
+    # === 阶段 7：proj1 重连 ===
+    ("S1: UserPromptSubmit(reconnect)", "UserPromptSubmit.json", {
+        "session_id": "comp-0001-0000-0000-0000-000000000001",
+        "cwd": "G:\\proj1", "prompt": "proj1 reconnect"
+    }),
+    # [期望] proj1 发现 slot[0] 被 proj11 占了，找不到空槽，被跳过
+
+    # === 阶段 8：全部 stop ===
+    *[
+        (f"S{i}: Stop", "Stop.json", {
+            "session_id": f"comp-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}"
+        })
+        for i in [2, 4, 5, 6, 11]  # 当前活跃的 5 个
+    ],
+]
+
+# ── v6 满槽淘汰序列 ───────────────────────────────────────
+# 验证 5 槽全满时第 6 个 session 触发 slot 0 淘汰
+V6_SLOT_OVERFLOW_SEQUENCE = [
+    # 依次填满 5 个槽（SID 末尾 8 位各不相同：0000000i）
+    *[
+        (f"S{i}: UserPromptSubmit", "UserPromptSubmit.json", {
+            "session_id": f"overflow-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "prompt": f"Task {i}"
+        })
+        for i in range(1, 6)
+    ],
+    *[
+        (f"S{i}: PreToolUse(Read)", "PreToolUse.json", {
+            "session_id": f"overflow-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "tool_name": "Read",
+            "tool_use_id": f"toolu_OF_R{i}", "tool_input": {"file_path": "main.py"}
+        })
+        for i in range(1, 6)
+    ],
+    # [期望] 5 个槽全满：slot[0~4] 各有一个 session
+    # 第 6 个 session 来了 → 触发淘汰 slot 0（proj1 被挤走）
+    ("S6: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "overflow-0006-0000-0000-0000-000000000006",
+        "cwd": "G:\\proj6", "prompt": "Task 6 triggers eviction"
+    }),
+    ("S6: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "overflow-0006-0000-0000-0000-000000000006",
+        "cwd": "G:\\proj6", "tool_name": "Bash",
+        "tool_use_id": "toolu_OF_B6", "tool_input": {"command": "echo overflow"}
+    }),
+    # [期望] log: "all slots full, evicting slot_id=000000000001 from slot[0]"
+    # slot[0] 被 proj6 占据，proj1 历史清空
+    *[
+        (f"S{i}: PostToolUse(Read)", "PostToolUse.json", {
+            "session_id": f"overflow-{i:04d}-0000-0000-0000-{i:012d}",
+            "cwd": f"G:\\proj{i}", "tool_name": "Read",
+            "tool_use_id": f"toolu_OF_R{i}", "tool_response": {"interrupted": False}
+        })
+        for i in range(1, 6)
+    ],
+    ("S6: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "overflow-0006-0000-0000-0000-000000000006",
+        "cwd": "G:\\proj6", "tool_name": "Bash",
+        "tool_use_id": "toolu_OF_B6", "tool_response": {"interrupted": False}
+    }),
+    *[(f"S{i}: Stop", "Stop.json", {
+        "session_id": f"overflow-{i:04d}-0000-0000-0000-{i:012d}", "cwd": f"G:\\proj{i}"
+    }) for i in range(1, 6)],
+    ("S6: Stop", "Stop.json", {
+        "session_id": "overflow-0006-0000-0000-0000-000000000006", "cwd": "G:\\proj6"
+    }),
+]
+
 # ── 所有序列（--all 模式）────────────────────────────────
 ALL_SEQUENCES = [
     (BASIC_SEQUENCE,               "基本功能测试"),
@@ -1354,6 +1644,10 @@ ALL_SEQUENCES = [
     (GUI_C_NEW_TURN_SEQUENCE,          "GUI C 状态新轮次测试"),
     (GUI_SESSION_RETIRE_SEQUENCE,      "GUI Session 退休测试"),
     (GUI_DISPLAY_NAME_CONFLICT_SEQUENCE, "GUI 显示名冲突测试"),
+    (V6_SLOT_STABILITY_SEQUENCE,         "v6 槽位稳定性测试"),
+    (V6_SAME_CWD_MULTI_SEQUENCE,         "v6 同cwd多窗口测试"),
+    (V6_SLOT_OVERFLOW_SEQUENCE,          "v6 满槽淘汰测试"),
+    (V6_COMPREHENSIVE_SEQUENCE,          "v6 15 session 综合压力测试"),
 ]
 
 
@@ -1450,6 +1744,13 @@ def _run_sequence(sequence, test_name, no_cooldown):
         label, filename, patch = item[0], item[1], item[2]
         interval = item[3] if len(item) > 3 else default_interval
         print(f"\n[{label}]")
+        # sleep 事件：filename=None，patch 含 sleep 字段
+        if filename is None:
+            secs = patch.get("sleep", 0) if patch else 0
+            if secs:
+                print(f"  sleeping {secs}s...")
+                time.sleep(secs)
+            continue
         raw = _load_fixture(filename, patch)
         fixture_json = json.dumps(raw, ensure_ascii=False).encode("utf-8")
         try:
@@ -1473,7 +1774,7 @@ def _run_sequence(sequence, test_name, no_cooldown):
     if slow_count:
         print(f"[sim] ⚠️  {slow_count} 个响应超过 1 秒")
     else:
-        print(f"[sim] ✓ 所有响应时间正常（< 1s）")
+        print(f"[sim] OK 所有响应时间正常（< 1s）")
 
     if not no_cooldown:
         print(f"[sim] 等待 session 清除（11s）...")
@@ -1537,6 +1838,10 @@ def main():
     parser.add_argument("--gui-c-then-new-turn", action="store_true", help="GUI C 状态新轮次测试")
     parser.add_argument("--gui-session-retire", action="store_true", help="GUI Session 退休测试（同 cwd）")
     parser.add_argument("--gui-display-name-conflict", action="store_true", help="GUI 显示名冲突测试")
+    parser.add_argument("--v6-slot-stability", action="store_true", help="v6 槽位稳定性测试（沉默重连不漂移）")
+    parser.add_argument("--v6-same-cwd-multi", action="store_true", help="v6 同cwd多窗口测试（不同SID各占独立槽）")
+    parser.add_argument("--v6-slot-overflow", action="store_true", help="v6 满槽淘汰测试（第6个session触发淘汰）")
+    parser.add_argument("--v6-comprehensive", action="store_true", help="v6 15 session 综合压力测试")
     parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
                         help="跳过序列结束后的 session 清除等待")
@@ -1628,6 +1933,14 @@ def main():
         sequence, test_name = GUI_SESSION_RETIRE_SEQUENCE, "GUI Session 退休测试"
     elif args.gui_display_name_conflict:
         sequence, test_name = GUI_DISPLAY_NAME_CONFLICT_SEQUENCE, "GUI 显示名冲突测试"
+    elif args.v6_slot_stability:
+        sequence, test_name = V6_SLOT_STABILITY_SEQUENCE, "v6 槽位稳定性测试"
+    elif args.v6_same_cwd_multi:
+        sequence, test_name = V6_SAME_CWD_MULTI_SEQUENCE, "v6 同cwd多窗口测试"
+    elif args.v6_slot_overflow:
+        sequence, test_name = V6_SLOT_OVERFLOW_SEQUENCE, "v6 满槽淘汰测试"
+    elif args.v6_comprehensive:
+        sequence, test_name = V6_COMPREHENSIVE_SEQUENCE, "v6 15 session 综合压力测试"
     else:
         sequence, test_name = BASIC_SEQUENCE, "基本功能测试"
 

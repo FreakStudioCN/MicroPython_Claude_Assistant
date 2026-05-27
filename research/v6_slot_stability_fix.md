@@ -477,7 +477,177 @@ clock 版本只遍历 `msg.sessions` 计算 dominant 状态，不关心槽位。
 
 ---
 
-### 5.3 向后兼容策略
+### 5.3 两张表分离机制
+
+#### 核心概念
+
+**表 1：映射表（长期记忆）**
+
+```python
+self._slot_assignments = {
+    "abc123": 0,  # projA 的身份证 → slot 0
+    "def456": 1,  # projB 的身份证 → slot 1
+    "ccc789": 2   # projC 的身份证 → slot 2
+}
+```
+
+**作用：** 记住"这个 session 之前在哪个槽"
+
+**生命周期：**
+- session 第一次出现 → 加入映射表
+- session 沉默 → **不删除**，继续记着
+- 槽位被淘汰（5 个槽满了，新 session 来了）→ 才删除
+
+---
+
+**表 2：显示状态（当前画面）**
+
+```python
+self._slot_names = ["projA", "projB", "projC", "", ""]
+```
+
+**作用：** 当前槽位显示什么名字（用于检测"名字变化"）
+
+**生命周期：**
+- session 出现 → 写入名字
+- session 沉默 → **不清空**，保留原名字
+- session 重连 → 名字一样，不触发"session changed"，历史保留
+
+---
+
+#### 完整场景演示
+
+**场景 1：A 项目长时间不活跃**
+
+```
+t=0  初始状态
+     wire: [projA(W), projB(W)]
+     
+     映射表: {"abc123": 0, "def456": 1}
+     slot_names: ["projA", "projB", "", "", ""]
+     显示: [S1=projA🟡] [S2=projB🟡] [S3] [S4] [S5]
+
+t=10  A stop
+      wire: [projA(C), projB(W)]
+      显示: [S1=projA🟢] [S2=projB🟡]
+
+t=12  A 的 C 过期
+      wire: [projA(I), projB(W)]
+      显示: [S1=projA⚪] [S2=projB🟡]
+
+t=22  A 沉默 >10s，daemon 不再推送 A
+      wire: [projB(W)]
+      
+      render() 处理：
+        - 处理 projB → slot 1 更新
+        - slot_updated = [False, True, False, False, False]
+        - slot 0 没更新 → _update_tab(0, None)
+      
+      映射表: {"abc123": 0, "def456": 1}  ← 还记得 A
+      slot_names: ["projA", "projB", "", "", ""]  ← 保留 A 的名字
+      显示: [S1⚪] [S2=projB🟡]  ← S1 显示空闲（灰色 "S1"）
+
+t=3600  A 沉默 1 小时
+        映射表: {"abc123": 0, "def456": 1}  ← 还记得
+        slot_names: ["projA", "projB", "", "", ""]  ← 还记得
+        显示: [S1⚪] [S2=projB🟡]
+
+t=3610  A 重新活跃
+        wire: [projB(W), projA(W)]
+        
+        render() 处理：
+          - 处理 projA:
+            slot_id = "abc123"
+            映射表里找到 → slot_index = 0
+            _update_tab(0, projA)
+              → sess.name = "projA"
+              → slot_names[0] = "projA"
+              → "projA" == "projA" → 名字没变 → 不清历史 ✅
+        
+        显示: [S1=projA🟡] [S2=projB🟡]  ← A 回到原位，历史保留！
+```
+
+---
+
+**场景 2：5 个槽都满了，第 6 个 session 来了**
+
+```
+初始状态：
+  映射表: {
+    "aaa": 0,  # projA
+    "bbb": 1,  # projB
+    "ccc": 2,  # projC
+    "ddd": 3,  # projD
+    "eee": 4   # projE
+  }
+  显示: [S1=A] [S2=B] [S3=C] [S4=D] [S5=E]
+
+projF 来了:
+  wire: [A, B, C, D, E, F]
+  
+  render() 处理到 F:
+    slot_id = "fff"
+    映射表里没有 → _find_empty_slot()
+      → 遍历 slot_names，都不是 "" → 没有空槽
+      → 淘汰 slot 0（简单策略）
+      → 删除映射表里的 "aaa": 0
+      → 返回 0
+    
+    映射表: {
+      "fff": 0,  # F 占了 A 的槽
+      "bbb": 1,
+      "ccc": 2,
+      "ddd": 3,
+      "eee": 4
+    }
+    
+    _update_tab(0, projF)
+      → slot_names[0] = "projA" → "projF"
+      → 名字变了 → 清空 slot 0 的历史（A 的历史丢了）
+    
+  显示: [S1=F] [S2=B] [S3=C] [S4=D] [S5=E]
+
+projA 再回来:
+  slot_id = "aaa"
+  映射表里没有了 → 当新 session
+  → _find_empty_slot() → 没空槽 → 淘汰 slot 0
+  → F 被挤走，A 占回 slot 0
+```
+
+---
+
+### 5.4 关键修复：清空槽位不清除名字记忆
+
+**问题：** 原 `_update_tab()` 在清空槽位时会清除 `self._slot_names[index]`，导致 session 重连时触发"名字变化"，历史被误清。
+
+**修复前（有问题）：**
+
+```python
+def _update_tab(self, index: int, sess):
+    if sess is None:
+        btn.set_style_bg_color(_C_TAB_IDLE, lv.PART.MAIN)
+        lbl.set_text(f"S{index+1}")
+        self._stop_blink(index)
+        self._slot_names[index] = ""  # ← 问题：清空了名字
+        return
+```
+
+**修复后（正确）：**
+
+```python
+def _update_tab(self, index: int, sess):
+    if sess is None:
+        btn.set_style_bg_color(_C_TAB_IDLE, lv.PART.MAIN)
+        lbl.set_text(f"S{index+1}")
+        self._stop_blink(index)
+        # v6 修复：不清除 slot_names，保留原名字，避免重连时误清历史
+        # self._slot_names[index] = ""  ← 删掉这行
+        return
+```
+
+---
+
+### 5.5 向后兼容策略
 
 #### 老 device 收到新 wire（带 slot）
 
@@ -501,13 +671,29 @@ if not slot_id:  # slot 为空字符串
 
 ---
 
-### 5.4 改动汇总
+### 5.6 改动汇总
 
 | 文件 | 改动类型 | 改动量 | panel 需要 | clock 需要 |
 |------|---------|--------|-----------|-----------|
 | `daemon/ble_daemon.py` | 修改 `_session_to_wire()` | +3 行 | ✅ | ✅ |
 | `device/protocol.py` | `SessionStatus` 加 `self.slot` | +1 行 | ✅ | ✅ |
-| `device/display_renderer.py` | 重写 `render()`，新增 `_find_empty_slot()` | ~60 行 | ✅ | ❌ |
+| `device/protocol.py` | 头部注释 v5 → v6 | 修改 3 处 | ✅ | ✅ |
+| `device/display_renderer.py` | `__init__()` 新增 `_slot_assignments` | +2 行 | ✅ | ❌ |
+| `device/display_renderer.py` | 重写 `render()` | 替换 21 行 → 42 行 | ✅ | ❌ |
+| `device/display_renderer.py` | 新增 `_find_empty_slot()` | +15 行 | ✅ | ❌ |
+| `device/display_renderer.py` | 修复 `_update_tab()` 清空逻辑 | -1 行 | ✅ | ❌ |
 | `device/light_renderer.py` | 不需要改 | 0 行 | ❌ | ❌ |
 
-**总改动量：** daemon 3 行，device ~62 行
+**总改动量：** daemon 3 行，device ~60 行
+
+---
+
+### 5.7 效果对比
+
+| 场景 | v5（旧） | v6（新） |
+|------|---------|---------|
+| A 沉默 >10s 后重连 | 槽位漂移，历史清空 | 回到原槽位，历史保留 ✅ |
+| 5 个槽满了，第 6 个来 | 覆盖第一个，历史清空 | 淘汰 slot 0，历史清空（合理） |
+| A 思考 5 分钟 | 一直在 wire，不清空 | 一直在 wire，不清空 ✅ |
+| 同目录多窗口 | 会漂移 | 各占一槽，不漂移 ✅ |
+| 关窗口再开（新 SID） | 当新 session | 当新 session ✅ |
