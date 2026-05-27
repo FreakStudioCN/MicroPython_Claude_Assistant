@@ -3,7 +3,7 @@
 本文档描述 `daemon/ble_daemon.py` 当前生产状态机。这里的“状态”指发送给设备的 wire 状态：
 
 ```json
-{"ss": [{"n": "project", "s": "W", "m": "Read: README.md"}]}
+{"ss": [{"n": "project", "s": "W", "m": "Read: README.md", "slot": "ab12cd34"}]}
 ```
 
 daemon 内部没有单独保存一个 `state` enum。设备状态由每个 `_Session` 的字段实时推导出来：

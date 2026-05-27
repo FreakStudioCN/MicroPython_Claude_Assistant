@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-# scripts/flash_device.py
+# scripts/flash_device.py —— ESP32 固件烧录工具
+#
+# 功能：
+#   1. [可选] 用 esptool 烧录 MicroPython 底层固件（--flash-firmware）
+#   2. 读取设备 MAC 地址，生成唯一 BLE_NAME
+#   3. 编译并上传 device/*.py 到设备（支持 mpy-cross 字节码编译）
+#   4. 安装 aioble 依赖库
+#   5. 重启设备
+#
+# 用法：
+#   python scripts/flash_device.py --variant clock                    # 仅上传代码
+#   python scripts/flash_device.py --variant panel --flash-firmware   # 首次安装：烧固件+上传代码
+#   python scripts/flash_device.py --variant clock --wipe             # 清空文件系统后上传
 
 import subprocess
 import sys
@@ -13,6 +25,62 @@ from typing import Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEVICE_DIR = os.path.join(ROOT, "device")
+FIRMWARE_DIR = os.path.join(ROOT, "firmware")
+
+# variant → 固件文件名前缀（匹配 firmware/ 目录下的 .bin）
+_FIRMWARE_PREFIX = {
+    "clock": "claude-buddy-clock-",
+    "panel": "claude-buddy-panel-",
+}
+
+
+def flash_micropython_firmware(variant: str, port: str, step: str):
+    """用 esptool 烧录 MicroPython 底层固件（.bin）。"""
+    print(f"[{step}] 烧录 MicroPython 固件...")
+    prefix = _FIRMWARE_PREFIX[variant]
+    candidates = [f for f in os.listdir(FIRMWARE_DIR)
+                  if f.startswith(prefix) and f.endswith(".bin")]
+    if not candidates:
+        print(f"[错误] firmware/ 目录下未找到 {prefix}*.bin")
+        sys.exit(1)
+    bin_path = os.path.join(FIRMWARE_DIR, sorted(candidates)[-1])  # 取版本最新的
+    print(f"  → 固件文件: {os.path.basename(bin_path)}")
+
+    # clock(ESP32-C3) 用默认参数，panel(ESP32-S3 PSRAM) 需指定 flash 模式/大小/频率
+    if variant == "panel":
+        cmd = [
+            sys.executable, "-m", "esptool",
+            "--chip", "esp32s3",
+            "--port", port,
+            "--baud", "460800",
+            "--before", "default_reset",
+            "--after", "hard_reset",
+            "write_flash",
+            "--flash_mode", "dio",
+            "--flash_size", "16MB",
+            "--flash_freq", "80m",
+            "--erase-all",
+            "0x0", bin_path,
+        ]
+    else:
+        cmd = [
+            sys.executable, "-m", "esptool",
+            "--chip", "esp32c3",
+            "--port", port,
+            "--baud", "460800",
+            "write_flash", "--erase-all", "-z", "0x0", bin_path,
+        ]
+    print(f"  → 执行: {' '.join(cmd[3:])}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print("[错误] esptool 烧录失败")
+        sys.exit(1)
+    print(f"  → 固件烧录完成，请按下设备 RST 键重启，确认串口重新连接后按回车继续...")
+    input()
+    # 重新扫描串口（固件烧录后 USB 复位，端口号可能变化）
+    new_port = select_com_port()
+    print(f"  → 使用新串口: {new_port}")
+    return new_port
 ENTRY_FILE = "main.py"
 _COM_PORT = None
 
@@ -383,9 +451,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 用法示例：
-  python scripts/flash_device.py                        # 烧录面板版（默认）
-  python scripts/flash_device.py --variant clock        # 烧录闹钟版
-  python scripts/flash_device.py --variant panel --wipe # 面板版，先清空文件系统
+  python scripts/flash_device.py                                    # 烧录面板版代码（默认）
+  python scripts/flash_device.py --variant clock                    # 烧录闹钟版代码
+  python scripts/flash_device.py --variant panel --wipe             # 面板版，先清空文件系统
+  python scripts/flash_device.py --variant clock --flash-firmware   # 首次安装：先烧固件再上传代码
 
 切换面板角色：
   1. 修改 device/config.py 中的 CHARACTER 字段：
@@ -402,14 +471,17 @@ def main():
   python scripts/preview_character.py --char kirby pikachu   # 只预览指定角色
 
 参数说明：
-  --variant   目标设备型号：panel（ESP32-S3 + 屏幕）| clock（ESP32-C3 + 灯光）
-  --wipe      烧录前清空设备文件系统（首次烧录或切换 variant 时建议使用，不可恢复）
+  --variant          目标设备型号：panel（ESP32-S3 + 屏幕）| clock（ESP32-C3 + 灯光）
+  --wipe             烧录前清空设备文件系统（首次烧录或切换 variant 时建议使用，不可恢复）
+  --flash-firmware   首次安装时使用：先用 esptool 烧录 MicroPython 底层固件，再上传代码
         """,
     )
     parser.add_argument("--variant", choices=["panel", "clock"], default="panel",
                         help="目标型号：panel（面板版）| clock（闹钟版），默认 panel")
     parser.add_argument("--wipe", action="store_true",
                         help="烧录前清空设备文件系统（危险：不可恢复）")
+    parser.add_argument("--flash-firmware", action="store_true",
+                        help="首次安装：先用 esptool 烧录 MicroPython 底层固件，再上传代码")
     args = parser.parse_args()
 
     # 从本地 config.py 读取 CHARACTER
@@ -428,6 +500,10 @@ def main():
     print(f"  → 使用串口: {_COM_PORT}")
 
     step = 0
+
+    if args.flash_firmware:
+        _COM_PORT = flash_micropython_firmware(args.variant, _COM_PORT, str(step))
+        step += 1
 
     if args.wipe:
         wipe_device(str(step))

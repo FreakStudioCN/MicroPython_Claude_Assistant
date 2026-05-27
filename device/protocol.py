@@ -43,7 +43,7 @@ class SessionStatus:
 
 
 class MultiSessionMsg:
-    """v5 wire 消息：包含所有活跃 session 的状态数组。"""
+    """v6 wire 消息：包含所有活跃 session 的状态数组。"""
     def __init__(self, sessions: list):
         self.sessions = [SessionStatus(s) for s in sessions]
 

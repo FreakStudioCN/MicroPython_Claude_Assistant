@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-# ble_daemon.py —— 长驻 BLE 桥接守护进程 (v5 纯展示版)
+# ble_daemon.py —— 长驻 BLE 桥接守护进程 (v6 纯展示版)
 #
 # 输入: hook_bridge.py 通过 TCP 57320 推 v2 envelope
 #       {type:"event", v:2, event:{kind, ...}, generic:{session_id, ...}}
-# 输出: 翻译为 protocol.py v5 精简 wire（1-5 BLE chunks）
-#       {"ss":[{"s":"I"}]}                    → 1 chunk
-#       {"ss":[{"s":"W","m":"Bash"}]}         → 2 chunks
-#       {"ss":[{"s":"W","m":"Read: main.py"}]} → 3 chunks
-#       {"ss":[{"s":"W","m":"Bash: git log --oneline --graph --all --decorate --abbrev"}]} → 5 chunks
-#       状态码: I=IDLE W=WORKING E=ERROR C=CELEBRATE
+# 输出: 翻译为 protocol.py v6 精简 wire（1-5 BLE chunks）
+#       {"ss":[{"n":"proj","s":"I","slot":"cd501167"}]}                    → 2 chunks
+#       {"ss":[{"n":"proj","s":"W","m":"Bash","slot":"cd501167"}]}         → 3 chunks
+#       {"ss":[{"n":"proj","s":"W","m":"Read: main.py","slot":"cd501167"}]} → 3 chunks
+#       {"ss":[{"n":"proj","s":"W","m":"Bash: git log --oneline --graph","slot":"cd501167"}]} → 5 chunks
+#       状态码: I=IDLE W=WORKING P=PENDING E=ERROR C=CELEBRATE
 #       消息长度: m 字段最长 60 字符（设备端跑马灯滚动显示）
 #       通过 BLE NUS 写到 ESP32
 #
-# v5 变化: 删除设备审批，改为纯展示 + 终端审批
-#   - 删除 PENDING 状态（审批在终端完成）
-#   - 删除设备→PC 审批回传
-#   - 删除心跳机制（单向推送）
-#   - 简化状态机（无审批队列）
+# v6 变化: wire 新增 slot 字段，修复槽位漂移 bug
+#   - 每个 session entry 带 slot 字段（SID 去连字符后取后 8 位）
+#   - device 端按 slot_id 而非数组下标映射槽位
+#   - session 沉默重连后回到原槽位，历史记录不误清
 #
 # 状态机: 每个 session_id 独立 _Session 对象
 #

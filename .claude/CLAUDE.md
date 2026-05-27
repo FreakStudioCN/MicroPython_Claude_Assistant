@@ -32,10 +32,11 @@
 - `device/assets/` 下的 PCM 文件是 `gen_voice_assets.py` 的生成产物，不要手动编辑
 - 用户自定义入口：语音音色 → `gen_voice_assets.py`；面板角色 → `device/character.py`；Logo → `scripts/logo_converter.py`；行为参数 → `device/config.py`
 
-## v5 协议（当前版本）
+## v6 协议（当前版本）
 
 - 单向推送（PC → 设备），无心跳，无审批
-- wire 格式：`{"ss":[{"n":"proj","s":"W","m":"Read: main.py"}]}`
+- wire 格式：`{"ss":[{"n":"proj","s":"W","m":"Read: main.py","slot":"cd501167"}]}`
+- `slot` 字段：session 唯一标识（SID 去连字符后取后 8 位），device 端用于槽位稳定映射
 - 状态枚举：`I`（空闲）/ `W`（执行中）/ `P`（待审批提醒）/ `C`（完成）/ `E`（出错）
 - 审批由 Claude Code 在终端 UI 完成，设备仅作灯光/语音提醒
 
@@ -44,6 +45,15 @@
 1. 所有 Python 代码遵循 PEP 8
 2. 注释和文档字符串使用中文
 3. Git commit message 使用中文或英文均可
+
+## 依赖管理
+
+- PC 端依赖统一在 `pyproject.toml` 的 `dependencies` 字段维护，安装：`pip install -e .`
+- 可选依赖（`mpy-cross`）在 `[project.optional-dependencies] dev` 中，安装：`pip install -e ".[dev]"`
+- `device/` 是 MicroPython 固件，**不参与依赖扫描**
+- 新增第三方包时，在 `scripts/update_deps.py` 的 `_IMPORT_TO_PKG` 加映射，然后运行 `python scripts/update_deps.py`
+- 通过命令行调用但无 `import` 的工具包（如 `mpremote`、`esptool`）在 `_FORCED_DEPS` 列表中维护
+- pre-commit hook 会自动扫描并更新 `pyproject.toml`；首次克隆后运行 `python scripts/install_hooks.py` 安装
 
 ## 联合测试流程
 
