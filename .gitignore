@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 codex_stderr.txt
 .context/
+
+# 日志文件
+logs/
+scripts/sim_device/logs/

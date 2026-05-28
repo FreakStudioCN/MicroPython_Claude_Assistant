@@ -460,13 +460,11 @@ class DisplayRenderer:
 
     def _on_clear_logs(self, e):
         import os
-        if cfg.LOG_STORAGE == "sd" and self._sd_available():
-            paths = ["/sd/log/run.log", "/sd/log/prev_run.log"]
-        else:
-            paths = ["/log/run.log", "/log/prev_run.log"]
+        log_dir = "/sd/log" if cfg.LOG_STORAGE == "sd" and self._sd_available() else "/log"
 
         cleared = []
-        for path in paths:
+        for i in range(cfg.LOG_MAX_FILES):
+            path = "{}/run_{}.log".format(log_dir, i)
             try:
                 os.remove(path)
                 cleared.append(path)
