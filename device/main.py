@@ -11,17 +11,17 @@ import protocol as p
 import logging
 
 if cfg.LOG_ENABLE:
-    try:
-        os.mkdir("/log")
-    except OSError:
-        pass
-    try:
-        os.rename("/log/run.log", "/log/prev_run.log")
-    except OSError:
-        pass
-    logging.basicConfig(filename=cfg.LOG_FILE, filemode="w", level=cfg.LOG_LEVEL)
+    from rotating_logger import install as _log_install
+    _log_install(
+        log_dir="/log",
+        max_files=cfg.LOG_MAX_FILES,
+        lines_per_file=cfg.LOG_LINES_PER_FILE,
+        prefix="run",
+        fmt="%(levelname)s:%(name)s:%(message)s"
+    )
+    logging.getLogger().setLevel(logging.INFO)
 else:
-    logging.basicConfig(level=cfg.LOG_LEVEL)
+    logging.basicConfig(level=logging.INFO)
 
 _log = logging.getLogger("main")
 

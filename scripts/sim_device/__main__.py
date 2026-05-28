@@ -5,18 +5,24 @@ import sys
 import os
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_SIM_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEVICE_DIR = os.path.join(_ROOT, "device")
+_SIM_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _DEVICE_DIR)
 sys.path.insert(0, _SIM_DIR)  # sim_device/ 优先，覆盖 device/transport.py
 
-_LOG_FILE = os.path.join(_SIM_DIR, "logs", "sim_device.log")
-os.makedirs(os.path.dirname(_LOG_FILE), exist_ok=True)
-logging.basicConfig(
-    filename=_LOG_FILE, filemode="w",
-    level=logging.DEBUG,
-    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+# 配置日志（使用轮转日志）
+_LOG_DIR = os.path.join(_SIM_DIR, "logs")
+from rotating_logger import RotatingFileHandler  # noqa: E402
+
+handler = RotatingFileHandler(
+    log_dir=_LOG_DIR,
+    max_files=4,
+    lines_per_file=150,
+    prefix="sim_device"
 )
+handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s:%(name)s:%(message)s"))
+logging.getLogger().addHandler(handler)
+logging.getLogger().setLevel(logging.DEBUG)
 
 from transport import TcpTransport  # noqa: E402
 from renderer import SimRenderer    # noqa: E402

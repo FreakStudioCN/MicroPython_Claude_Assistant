@@ -1,0 +1,150 @@
+2026-05-28 23:19:59,771 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:19:59,771 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:19:59,771 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:19:59,771 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:19:59,771 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:19:59,771 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:19:59,771 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "P"}, {"n": "proj8", "slot": "00000008", "s": "W", "m": "Bash: git push --force"}, {"n": "proj9", "slot": "00000009", "s": "W"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj2", "slot": "00000002", "s": "I"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:00,565 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:00,565 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:00,565 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:00,565 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:00,565 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,181 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "P"}, {"n": "proj8", "slot": "00000008", "s": "P"}, {"n": "proj9", "slot": "00000009", "s": "W"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj2", "slot": "00000002", "s": "I"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:01,181 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:01,182 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:01,182 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:01,182 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:01,182 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,410 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "P"}, {"n": "proj8", "slot": "00000008", "s": "P"}, {"n": "proj9", "slot": "00000009", "s": "W", "m": "Bash: echo hello"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj2", "slot": "00000002", "s": "I"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:02,411 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:02,411 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:02,411 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:02,411 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:02,411 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,013 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "P"}, {"n": "proj8", "slot": "00000008", "s": "P"}, {"n": "proj9", "slot": "00000009", "s": "E"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj2", "slot": "00000002", "s": "I"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:03,013 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:03,013 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:03,013 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:03,013 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:03,013 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,013 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:03,013 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,013 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,013 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,013 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,013 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,014 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,014 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,014 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,014 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,014 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,433 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "C"}, {"n": "proj8", "slot": "00000008", "s": "P"}, {"n": "proj9", "slot": "00000009", "s": "E"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj2", "slot": "00000002", "s": "I"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:03,433 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:03,433 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:03,433 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:03,433 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:03,434 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "C"}, {"n": "proj8", "slot": "00000008", "s": "C"}, {"n": "proj9", "slot": "00000009", "s": "E"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj2", "slot": "00000002", "s": "I"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:04,054 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:04,054 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:04,054 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:04,054 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,054 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,055 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,055 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:04,055 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,075 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "C"}, {"n": "proj8", "slot": "00000008", "s": "C"}, {"n": "proj9", "slot": "00000009", "s": "E"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:05,076 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:05,076 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:05,076 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:05,076 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,076 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,480 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "I"}, {"n": "proj8", "slot": "00000008", "s": "C"}, {"n": "proj9", "slot": "00000009", "s": "E"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj4", "slot": "00000004", "s": "I"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:05,480 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:05,480 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:05,481 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:05,481 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:05,481 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,481 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:05,481 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,481 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,481 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,481 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,482 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,482 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,482 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,482 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,482 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,682 DEBUG:main:recv: {"ss": [{"n": "proj10", "slot": "00000010", "s": "W"}, {"n": "proj12", "slot": "00000012", "s": "W"}, {"n": "proj13", "slot": "00000013", "s": "W"}, {"n": "proj14", "slot": "00000014", "s": "W"}, {"n": "proj15", "slot": "00000015", "s": "W"}, {"n": "MicroPython_", "slot": "b0ee5763", "s": "W", "m": "Bash: python scripts/sim_hooks_v5.py --v6-comprehensive "}, {"n": "proj6", "slot": "00000006", "s": "I"}, {"n": "proj7", "slot": "00000007", "s": "I"}, {"n": "proj8", "slot": "00000008", "s": "C"}, {"n": "proj9", "slot": "00000009", "s": "E"}, {"n": "proj3", "slot": "00000003", "s": "W"}, {"n": "proj11", "slot": "00000011", "s": "I"}, {"n": "proj1", "slot": "00000001", "s": "W"}, {"n": "proj5", "slot": "00000005", "s": "I"}]}
+2026-05-28 23:20:05,682 INFO:session_mgr:slot[1] hit slot_id=00000010 name=proj10
+2026-05-28 23:20:05,682 INFO:session_mgr:slot[3] hit slot_id=00000012 name=proj12
+2026-05-28 23:20:05,683 INFO:session_mgr:slot[4] hit slot_id=00000013 name=proj13
+2026-05-28 23:20:05,683 INFO:session_mgr:slot[2] hit slot_id=00000014 name=proj14
+2026-05-28 23:20:05,683 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,683 INFO:session_mgr:slot[0] hit slot_id=b0ee5763 name=MicroPython_
+2026-05-28 23:20:05,683 WARNING:session_mgr:all slots full, session skipped
+2026-05-28 23:20:05,683 WARNING:session_mgr:all slots full, session skipped
