@@ -1563,6 +1563,68 @@ V6_COMPREHENSIVE_SEQUENCE = [
         })
         for i in [2, 4, 5, 6, 11]  # 当前活跃的 5 个
     ],
+
+    # === 阶段 9：多窗口审批 + 新 session + 报错 ===
+    # 先让 proj7 和 proj8 进入 W 状态
+    ("S7: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "comp-0007-0000-0000-0000-000000000007",
+        "cwd": "G:\\proj7", "prompt": "Task 7 restart"
+    }),
+    ("S8: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "comp-0008-0000-0000-0000-000000000008",
+        "cwd": "G:\\proj8", "prompt": "Task 8 restart"
+    }),
+    ("S7: PreToolUse(Bash-risky)", "PreToolUse.json", {
+        "session_id": "comp-0007-0000-0000-0000-000000000007",
+        "cwd": "G:\\proj7", "tool_name": "Bash",
+        "tool_use_id": "toolu_C_B7", "tool_input": {"command": "rm -rf /tmp/build"}
+    }),
+    ("S8: PreToolUse(Bash-risky)", "PreToolUse.json", {
+        "session_id": "comp-0008-0000-0000-0000-000000000008",
+        "cwd": "G:\\proj8", "tool_name": "Bash",
+        "tool_use_id": "toolu_C_B8", "tool_input": {"command": "git push --force"}
+    }),
+    # proj7 和 proj8 触发审批通知 → P
+    ("S7: Notification(permission_prompt→P)", "Notification.json", {
+        "session_id": "comp-0007-0000-0000-0000-000000000007",
+        "notification_type": "permission_prompt"
+    }),
+    ("S8: Notification(permission_prompt→P)", "Notification.json", {
+        "session_id": "comp-0008-0000-0000-0000-000000000008",
+        "notification_type": "permission_prompt"
+    }),
+    # [期望] S7=P, S8=P，dominant=P
+    # 新 session 在两个 P 状态期间到达
+    ("S9: UserPromptSubmit(新session在P期间)", "UserPromptSubmit.json", {
+        "session_id": "comp-0009-0000-0000-0000-000000000009",
+        "cwd": "G:\\proj9", "prompt": "New task during approval"
+    }),
+    ("S9: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "comp-0009-0000-0000-0000-000000000009",
+        "cwd": "G:\\proj9", "tool_name": "Bash",
+        "tool_use_id": "toolu_C_B9", "tool_input": {"command": "echo hello"}
+    }),
+    # [期望] S7=P, S8=P, S9=W，dominant=P
+    # proj9 报错
+    ("S9: PostToolUseFailure(报错)", "PostToolUseFailure.json", {
+        "session_id": "comp-0009-0000-0000-0000-000000000009",
+        "tool_name": "Bash", "tool_use_id": "toolu_C_B9",
+        "error": "Permission denied"
+    }),
+    # [期望] S7=P, S8=P, S9=E，dominant=E（E > P）
+    # 解决审批：Stop 清零 waiting → C
+    ("S7: Stop(审批完成→C)", "Stop.json", {
+        "session_id": "comp-0007-0000-0000-0000-000000000007",
+        "cwd": "G:\\proj7"
+    }),
+    ("S8: Stop(审批完成→C)", "Stop.json", {
+        "session_id": "comp-0008-0000-0000-0000-000000000008",
+        "cwd": "G:\\proj8"
+    }),
+    ("S9: StopFailure", "StopFailure.json", {
+        "session_id": "comp-0009-0000-0000-0000-000000000009"
+    }),
+    # [期望] S7=C, S8=C, S9=E → dominant=E
 ]
 
 # ── v6 满槽淘汰序列 ───────────────────────────────────────
@@ -1848,8 +1910,9 @@ def main():
     args = parser.parse_args()
 
     # ── 1. 启动 daemon ────────────────────────────────────
-    import tempfile
-    LOG_PATH = os.path.join(tempfile.gettempdir(), "ble_daemon.log")
+    _sim_log_dir = os.path.join(ROOT, "scripts", "sim_device", "logs")
+    os.makedirs(_sim_log_dir, exist_ok=True)
+    LOG_PATH = os.path.join(_sim_log_dir, "daemon.log")
 
     daemon_proc = None
     if not args.no_daemon:

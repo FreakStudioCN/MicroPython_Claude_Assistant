@@ -57,15 +57,17 @@
 
 ## 联合测试流程
 
+**两种场景，日志路径不同：**
+
+### 场景一：真实设备（ESP32 + BLE）
+
 设备端日志写入 `/log/run.log`（每次启动清空），通过 `config.py` 的 `LOG_ENABLE` 控制：
 - `LOG_ENABLE = True`：写设备 flash 文件，供 mpremote 读取分析
 - `LOG_ENABLE = False`：走串口输出，正常使用模式
 
-**测试步骤：**
-
-1. 用户手动启动 daemon：
+1. 用户手动启动 daemon（日志自动写到 `logs/daemon.log`）：
    ```
-   python daemon/ble_daemon.py 2>&1 | tee logs/daemon.log
+   python daemon/ble_daemon.py
    ```
 2. 用户告知 Claude "daemon 已启动"
 3. Claude 执行：`python scripts/sim_hooks_v5.py --clock --no-daemon`
@@ -74,3 +76,22 @@
 6. Claude 修改代码后提示用户重启 daemon，重复上述流程验证
 
 **注意：** BLE（测试通信）和 USB 串口（mpremote 读日志）不冲突，可同时使用。
+
+### 场景二：模拟设备（PC 端 sim_device，无需 ESP32）
+
+daemon 以 `--tcp-device` 模式连接 PC 端 `sim_device`，日志统一在 `scripts/sim_device/logs/`：
+- `scripts/sim_device/logs/daemon.log`：daemon 日志（`--tcp-device` 时自动写此路径）
+- `scripts/sim_device/logs/sim_device.log`：sim_device 结构化日志
+
+```
+python scripts/sim_hooks_v5.py --stub --skip-ble-check
+```
+
+运行完毕后直接读日志文件分析，无需任何重定向操作。
+
+## 日志规范
+
+- **不做 stdout 重定向**：`print()` 是终端实时渲染用的（含 ANSI 转义码），写进文件是乱码，无分析价值，不需要捕获
+- **logging 模块自动写文件**：`sim_device` 的结构化日志自动写到 `scripts/sim_device/logs/sim_device.log`，运行完后直接读该文件分析
+- **日志文件紧邻产生它的模块**：`logs/` 目录不应存在于项目根，所有测试日志统一放 `scripts/sim_device/logs/`
+- **正确分析流程**：运行 → 等结束 → 读 `scripts/sim_device/logs/sim_device.log` → 分析，无需任何重定向操作

@@ -185,6 +185,54 @@ class BleTransport(Transport):
     # ── 连接循环结束 ─────────────────────────────────────────
 
 
+# ── TCP 设备模拟传输（sim_device 用） ────────────────────────────
+
+TCP_DEVICE_PORT = 57321
+
+
+class TcpDeviceTransport(Transport):
+    """监听 TCP 57321，等待 sim_device 连接；send() 把 JSON 行推给它。"""
+
+    def __init__(self):
+        self._writer: Optional[asyncio.StreamWriter] = None
+        self._on_connect: Optional[Callable] = None
+        self._on_disconnect: Optional[Callable] = None
+
+    async def start(self, on_recv, on_connect, on_disconnect):
+        self._on_connect = on_connect
+        self._on_disconnect = on_disconnect
+        server = await asyncio.start_server(self._handle, "127.0.0.1", TCP_DEVICE_PORT)
+        print(f"[tcp-device] listening on 127.0.0.1:{TCP_DEVICE_PORT}")
+        async with server:
+            await server.serve_forever()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self._writer = writer
+        print("[tcp-device] sim_device connected")
+        if self._on_connect:
+            self._on_connect()
+        try:
+            await reader.read(65536)  # 等待断开
+        finally:
+            self._writer = None
+            print("[tcp-device] sim_device disconnected")
+            if self._on_disconnect:
+                self._on_disconnect()
+
+    async def send(self, payload: dict):
+        if self._writer is None:
+            return
+        line = (json.dumps(payload, ensure_ascii=False) + "\n").encode()
+        self._writer.write(line)
+        await self._writer.drain()
+
+    def connected(self) -> bool:
+        return self._writer is not None
+
+    def device_online(self) -> bool:
+        return self.connected()
+
+
 # ── WiFi 实现（预留） ─────────────────────────────────────────
 
 class WifiTransport(Transport):

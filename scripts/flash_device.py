@@ -318,13 +318,27 @@ def upload_firmware(config_content: str, step: str, wiped: bool = False, charact
             else:
                 upload_list.append((config_py, "config.py"))
 
-            # device/*.py（char_*.py 只上传选中的那个）
+            # device/*.py（根据 variant 排除形态专属文件）
             needed_char = f"char_{character}.py"
+
+            # 根据形态排除专属文件：
+            #   clock：排除屏幕渲染器（display_renderer.py）和槽位管理器（session_manager.py，仅面板版使用）
+            #   panel：排除灯光渲染器（light_renderer.py）
+            #   voice_task.py 两者都需要（面板版也有扬声器）
+            variant = config_content.split('VARIANT = "')[1].split('"')[0]
+            if variant == "clock":
+                excluded = {"display_renderer.py", "session_manager.py"}
+            elif variant == "panel":
+                excluded = {"light_renderer.py"}
+            else:
+                excluded = set()
+
             try:
                 py_files = [
                     f for f in os.listdir(DEVICE_DIR)
                     if f.endswith(".py") and f != "config.py"
                     and os.path.isfile(os.path.join(DEVICE_DIR, f))
+                    and f not in excluded
                     and (not f.startswith("char_") or f == needed_char)
                 ]
             except Exception as e:

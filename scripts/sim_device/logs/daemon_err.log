@@ -1,0 +1,22 @@
+Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x00000290DC2BC5E0>
+Traceback (most recent call last):
+  File "G:\miniconda\install\lib\asyncio\proactor_events.py", line 116, in __del__
+    self.close()
+  File "G:\miniconda\install\lib\asyncio\proactor_events.py", line 108, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "G:\miniconda\install\lib\asyncio\base_events.py", line 746, in call_soon
+    self._check_closed()
+  File "G:\miniconda\install\lib\asyncio\base_events.py", line 510, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x00000290DC2BC5E0>
+Traceback (most recent call last):
+  File "G:\miniconda\install\lib\asyncio\proactor_events.py", line 116, in __del__
+    self.close()
+  File "G:\miniconda\install\lib\asyncio\proactor_events.py", line 108, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "G:\miniconda\install\lib\asyncio\base_events.py", line 746, in call_soon
+    self._check_closed()
+  File "G:\miniconda\install\lib\asyncio\base_events.py", line 510, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed

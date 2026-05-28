@@ -41,9 +41,9 @@ import time
 from typing import Optional
 
 try:
-    from .transport import BleTransport
+    from .transport import BleTransport, TcpDeviceTransport
 except ImportError:  # 直接 `python daemon/ble_daemon.py` 跑时
-    from transport import BleTransport
+    from transport import BleTransport, TcpDeviceTransport
 
 HOST = "127.0.0.1"
 # CLAUDE_BUDDY_PORT 让 e2e 测试用临时端口避开生产 daemon。生产默认 57320。
@@ -89,6 +89,7 @@ _dirty = False         # 全局 dirty 标志（pusher 用）
 # ── stub 模式 ─────────────────────────────────────────────
 _stub = False
 _force_offline = False  # --offline 标志：强制 device_online=False，覆盖 stub 的在线假设
+_tcp_device = False     # --tcp-device 标志：用 TcpDeviceTransport 替代 BLE
 
 # ── Transport ─────────────────────────────────────────────
 _transport: Optional[BleTransport] = None
@@ -552,9 +553,12 @@ async def _handle_client(reader, writer):
 async def async_main():
     global _lock, _transport
     _lock = asyncio.Lock()
-    _transport = BleTransport()
+    if _tcp_device:
+        _transport = TcpDeviceTransport()
+    else:
+        _transport = BleTransport()
     server = await asyncio.start_server(_handle_client, HOST, PORT)
-    print(f"[daemon] listening on {HOST}:{PORT}  stub={_stub}")
+    print(f"[daemon] listening on {HOST}:{PORT}  stub={_stub}  tcp_device={_tcp_device}")
     async with server:
         if _stub:
             await asyncio.gather(server.serve_forever(), _pusher_task())
@@ -577,22 +581,29 @@ def main() -> None:
     ``async_main()``，由本函数 ``asyncio.run`` 包起来。直接 ``python daemon/ble_daemon.py``
     跑也走这里。
     """
-    global _stub, _force_offline
+    global _stub, _force_offline, _tcp_device
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--stub", action="store_true",
                         help="跳过 BLE 连接, _send 改 stdout 打印用于 e2e 测试")
     parser.add_argument("--offline", action="store_true",
                         help="强制模拟设备离线（覆盖 stub 在线假设），用于离线审批测试")
+    parser.add_argument("--tcp-device", action="store_true",
+                        help="用 TCP 57321 替代 BLE，配合 scripts/sim_device.py 使用")
     parser.add_argument("--log", type=str, default=None,
-                        help="日志文件路径（默认：临时目录下的 ble_daemon.log）")
+                        help="日志文件路径（默认：普通模式→logs/daemon.log，--tcp-device→scripts/sim_device/logs/daemon.log）")
     args = parser.parse_args()
     _stub = args.stub
     _force_offline = args.offline
+    _tcp_device = args.tcp_device
 
-    import os
-    import tempfile
-    log_path = args.log or os.path.join(tempfile.gettempdir(), "ble_daemon.log")
+    _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if args.tcp_device:
+        _default_log_dir = os.path.join(_ROOT, "scripts", "sim_device", "logs")
+    else:
+        _default_log_dir = os.path.join(_ROOT, "logs")
+    os.makedirs(_default_log_dir, exist_ok=True)
+    log_path = args.log or os.path.join(_default_log_dir, "daemon.log")
 
     class TeeOutput:
         def __init__(self, file_path, original_stream):

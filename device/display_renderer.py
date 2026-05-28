@@ -26,6 +26,7 @@ _char_mod = __import__("char_" + cfg.CHARACTER) if cfg.CHARACTER != "claude" els
 _CharClass = getattr(_char_mod, "".join(w[0].upper() + w[1:] for w in cfg.CHARACTER.split("_")) + "Character") if _char_mod else __import__("character").ClaudeCharacter
 from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
 from voice_task import VoiceTask
+from session_manager import SessionManager
 import logging
 _log = logging.getLogger("display")
 
@@ -109,9 +110,11 @@ class DisplayRenderer:
         self._tab_btns    = []
         self._tab_labels  = []
         self._containers  = []
-        self._histories   = [[] for _ in range(MAX_SESSIONS)]
         self._selected    = 0
         self._blink_tasks = [None] * MAX_SESSIONS
+
+        # SessionManager（slot 映射 + 历史记录）
+        self._sm = SessionManager(MAX_SESSIONS, cfg.HISTORY_MAX_LEN)
 
         # Config 面板控件
         self._brightness_slider = None
@@ -129,10 +132,6 @@ class DisplayRenderer:
 
         # 槽位名记录（用于检测 session 变化）
         self._slot_names = [""] * MAX_SESSIONS
-
-        # v6 协议：slot_id → 槽位编号 的映射（长期记忆）
-        self._slot_assignments = {}  # slot_id(str) → slot_index(int)
-        self._slot_last_used = [0] * MAX_SESSIONS  # LRU：每槽最后更新时间
 
         # 长按 guard：吃掉长按后紧随的 CLICKED
         self._tab_long_pressed = [False] * MAX_SESSIONS
@@ -404,7 +403,7 @@ class DisplayRenderer:
 
     def _on_tab_long_press(self, idx):
         self._tab_long_pressed[idx] = True
-        self._histories[idx].clear()
+        self._sm.histories[idx].clear()
         self._containers[idx].clean()
         lbl = self._tab_labels[idx]
         orig = lbl.get_text()
@@ -485,32 +484,13 @@ class DisplayRenderer:
         if msg is None or isinstance(msg, dict):
             return
 
-        # v6 协议：按 slot 字段映射，不再按数组下标
-        slot_updated = [False] * MAX_SESSIONS
-        ordered_sessions = [None] * MAX_SESSIONS  # 按槽位顺序重建 sessions 列表
+        # v6 协议：SessionManager 处理 slot 映射
+        assigned, cleared, ordered = self._sm.update(msg.sessions)
 
-        for sess in msg.sessions:
-            slot_id = sess.slot
-            if not slot_id:  # 向后兼容：无 slot 字段时跳过
-                continue
-
-            # 查找或分配槽位
-            if slot_id in self._slot_assignments:
-                slot_index = self._slot_assignments[slot_id]
-                _log.info("slot[%d] cache hit slot_id=%s name=%s", slot_index, slot_id, sess.name)
-            else:
-                slot_index = self._find_empty_slot()
-                if slot_index is None:
-                    continue
-                self._slot_assignments[slot_id] = slot_index
-                _log.info("slot[%d] assigned to slot_id=%s", slot_index, slot_id)
-
+        for slot_index, sess in assigned:
             # 更新槽位
             self._update_tab(slot_index, sess)
             self._update_history(slot_index, sess)
-            self._slot_last_used[slot_index] = time.ticks_ms()
-            slot_updated[slot_index] = True
-            ordered_sessions[slot_index] = sess  # 按槽位顺序记录
 
             # 状态跳变检测 → 触发语音
             cur = _sess_state(sess)
@@ -521,29 +501,14 @@ class DisplayRenderer:
                     await self._voice.trigger(self._history, sess, cur)
                 self._prev_states[sess.name] = cur
 
-        # 清空未更新的槽（wire 里没有的 session），并释放映射
-        for i in range(MAX_SESSIONS):
-            if not slot_updated[i]:
-                self._update_tab(i, None)
-                for slot_id, idx in list(self._slot_assignments.items()):
-                    if idx == i:
-                        del self._slot_assignments[slot_id]
-                        _log.info("slot[%d] released, slot_id=%s removed", i, slot_id)
-                        break
+        # 清空未更新的槽
+        for slot_index in cleared:
+            self._update_tab(slot_index, None)
 
         # 更新 self._sessions 为按槽位顺序的列表（供 _update_main 使用）
-        self._sessions = [s for s in ordered_sessions if s is not None]
+        self._sessions = [s for s in ordered if s is not None]
 
         self._update_main()
-
-    def _find_empty_slot(self):
-        """找第一个未被任何 slot_id 占用的槽，满了返回 None。"""
-        occupied = set(self._slot_assignments.values())
-        for i in range(MAX_SESSIONS):
-            if i not in occupied:
-                return i
-        _log.warning("all slots full, session skipped")
-        return None
 
     async def on_connect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_ON, lv.PART.MAIN)
@@ -622,7 +587,7 @@ class DisplayRenderer:
 
         # 检测 session 名变化，自动清空历史
         if sess.name != self._slot_names[index]:
-            self._histories[index].clear()
+            self._sm.histories[index].clear()
             self._containers[index].clean()
             self._slot_names[index] = sess.name
             _log.info("slot[%d] session changed: %s", index, sess.name)
@@ -637,28 +602,23 @@ class DisplayRenderer:
             self._stop_blink(index)
 
     def _update_history(self, index: int, sess):
-        state   = _sess_state(sess)
-        history = self._histories[index]
-        text    = sess.msg if sess.msg else _STATE_LABELS[state]
-        record  = {"msg": text, "state": state}
+        state = _sess_state(sess)
+        text = sess.msg if sess.msg else _STATE_LABELS[state]
+        action = self._sm.push_history(index, text, state)
 
-        if history and history[-1]["msg"] == text and history[-1]["state"] == state:
+        _log.info("sess=%s state=%s msg=%s action=%s", sess.name, state, text, action)
+
+        if action == "skip":
             return
-
-        if history and history[-1]["msg"] == text:
-            history[-1]["state"] = state
+        elif action == "update":
             self._render_container(index)
-            return
-
-        history.append(record)
-        _log.info("sess=%s state=%s msg=%s", sess.name, state, text)
-        if len(history) > cfg.HISTORY_MAX_LEN:
-            history.pop(0)
-            c = self._containers[index]
-            if c.get_child_count() > 0:
-                c.get_child(0).delete()
-
-        self._append_message_block(index, record)
+        elif action in ("append", "overflow"):
+            if action == "overflow":
+                c = self._containers[index]
+                if c.get_child_count() > 0:
+                    c.get_child(0).delete()
+            record = self._sm.histories[index][-1]
+            self._append_message_block(index, record)
 
     def _append_message_block(self, index: int, record: dict):
         container = self._containers[index]
@@ -677,7 +637,7 @@ class DisplayRenderer:
 
     def _render_container(self, index: int):
         self._containers[index].clean()
-        for record in self._histories[index]:
+        for record in self._sm.histories[index]:
             self._append_message_block(index, record)
 
     # ── 选项卡闪烁 ────────────────────────────────────────────
