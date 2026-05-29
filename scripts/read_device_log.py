@@ -4,6 +4,7 @@
 用法：
     python scripts/read_device_log.py              # 读取所有日志
     python scripts/read_device_log.py --tail 50    # 只显示最后 50 行
+    python scripts/read_device_log.py --clear      # 删除所有日志文件
 """
 
 import subprocess
@@ -39,11 +40,45 @@ def read_file_content(index: int) -> str:
     return ""
 
 
+def delete_log_file(index: int) -> bool:
+    """删除单个日志文件，返回是否成功"""
+    result = subprocess.run(
+        ["mpremote", "exec",
+         f"try:\n import os; os.remove('/log/run_{index}.log'); print('ok')\n"
+         f"except Exception as e: print('err', e)"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and "ok" in result.stdout
+
+
+def clear_all_logs():
+    """删除所有设备端日志文件"""
+    found = False
+    for i in range(8):
+        mtime = get_file_mtime(i)
+        if mtime is not None:
+            found = True
+            if delete_log_file(i):
+                print(f"[info] 已删除 /log/run_{i}.log")
+            else:
+                print(f"[error] 删除失败 /log/run_{i}.log", file=sys.stderr)
+    if not found:
+        print("[info] 没有日志文件需要删除")
+
+
 def main():
     parser = argparse.ArgumentParser(description="读取设备端循环日志")
     parser.add_argument("--tail", type=int, help="只显示最后 N 行")
+    parser.add_argument("--clear", action="store_true", help="删除所有设备端日志文件")
     args = parser.parse_args()
 
+    # 清除模式
+    if args.clear:
+        clear_all_logs()
+        return
+
+    # 读取模式
     # 获取所有日志文件的 mtime
     files = []
     for i in range(8):  # 最多支持 8 个文件
@@ -71,7 +106,7 @@ def main():
 
     # 输出
     if args.tail:
-        all_lines = all_lines[-args.tail :]
+        all_lines = all_lines[-args.tail:]
 
     for line in all_lines:
         print(line)

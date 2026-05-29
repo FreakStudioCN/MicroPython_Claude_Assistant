@@ -119,6 +119,7 @@ class DisplayRenderer:
         self._ordered   = [None] * MAX_SESSIONS
         self._disp      = None
         self._last_active_sess = None
+        self._last_sticky_dot_count = 0
 
         # 语音
         self._voice       = VoiceTask()
@@ -523,30 +524,48 @@ class DisplayRenderer:
         self._sessions = []
         self._ordered = [None] * MAX_SESSIONS
         self._prev_states.clear()
+        self._last_sticky_dot_count = 0
         self._update_main()
 
     # ── 主界面更新 ────────────────────────────────────────────
 
     def _update_main(self):
-        state = sticky_dominant(dominant_state(self._sessions), self._logo_state)
+        raw_dominant = dominant_state(self._sessions)
+        state = sticky_dominant(raw_dominant, self._logo_state)
+        if raw_dominant != state:
+            _log.info("sticky dominant: raw=%s -> %s (keep %s against I)", raw_dominant, state, self._logo_state)
 
         # Logo 动画状态
         if state != self._logo_state:
+            # 检测粘滞是否被新 W/E 打破
+            if self._logo_state in (S_DONE, S_PENDING) and state not in (S_DONE, S_PENDING, S_IDLE):
+                _log.info("sticky broken: %s->%s (sticky was holding %s)", self._logo_state, state, self._logo_state)
             _log.info("dominant: %s->%s", self._logo_state, state)
             self._logo_state = state
             self._logo_frame = 0
 
         # session 圆点：按槽位位置取 self._ordered，保持 dot[i] ↔ slot[i] 对应
+        sticky_dot_count = 0
         for i, dot in enumerate(self._session_dots):
             sess = self._ordered[i] if i < len(self._ordered) else None
             if sess is not None:
-                s = _sess_state(sess)
-                s = sticky_dominant(s, self._prev_states.get(sess.name))
+                raw_s = _sess_state(sess)
+                prev  = self._prev_states.get(sess.name)
+                s = sticky_dominant(raw_s, prev)
+                if raw_s != s:
+                    _log.info("sticky dot[%d] %s: raw=%s prev=%s -> sticky=%s", i, sess.name, raw_s, prev, s)
                 dot.set_style_bg_color(_DOT_COLORS[s], lv.PART.MAIN)
             elif state in (S_DONE, S_PENDING):
+                sticky_dot_count += 1
                 continue
             else:
                 dot.set_style_bg_color(_DOT_COLORS[S_IDLE], lv.PART.MAIN)
+
+        # 空槽粘滞：记录粘滞保持的 dot 数量（去重，只在变化时日志）
+        if sticky_dot_count != getattr(self, '_last_sticky_dot_count', 0):
+            if sticky_dot_count > 0:
+                _log.info("sticky hold: %d empty dot(s) kept at dominant=%s", sticky_dot_count, state)
+            self._last_sticky_dot_count = sticky_dot_count
 
         # 消息块：取优先级最高的 session
         active_sess = None
@@ -567,6 +586,7 @@ class DisplayRenderer:
             self._msg_block.set_style_bg_color(_BLOCK_COLORS[_sess_state(active_sess)], lv.PART.MAIN)
         elif state in (S_DONE, S_PENDING) and self._last_active_sess:
             sess = self._last_active_sess
+            _log.info("sticky msg: show %s as %s (all sessions gone, sticky hold)", sess.name, _STATE_LABELS[state])
             self._msg_label.set_text(f"{sess.name}: {_STATE_LABELS[state]}")
             self._msg_block.set_style_bg_color(_BLOCK_COLORS[state], lv.PART.MAIN)
         else:
@@ -607,11 +627,14 @@ class DisplayRenderer:
             _log.info("slot[%d] session changed: %s", index, sess.name)
 
         state     = _sess_state(sess)
-        state     = sticky_dominant(state, self._prev_states.get(sess.name))
+        prev      = self._prev_states.get(sess.name)
+        sticky_s  = sticky_dominant(state, prev)
+        if state != sticky_s:
+            _log.info("sticky tab[%d] %s: raw=%s prev=%s -> sticky=%s", index, sess.name, state, prev, sticky_s)
         color_map = {S_ERROR: _C_TAB_ERR, S_WORKING: _C_TAB_WORK, S_PENDING: _C_TAB_PEND, S_DONE: _C_TAB_CELE}
-        btn.set_style_bg_color(color_map.get(state, _C_TAB_IDLE), lv.PART.MAIN)
+        btn.set_style_bg_color(color_map.get(sticky_s, _C_TAB_IDLE), lv.PART.MAIN)
         lbl.set_text(sess.name)
-        if state == S_ERROR:
+        if sticky_s == S_ERROR:
             self._start_blink(index)
         else:
             self._stop_blink(index)

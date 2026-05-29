@@ -1735,6 +1735,157 @@ STICKY_STATE_SEQUENCE = [
     # [期望] logo 仍是绿色
 ]
 
+# ── 综合测试：粘滞状态 + 槽位稳定性 + 满槽 + 混合状态 ─────
+# 单一序列覆盖：5槽填满 → C/P/E混合粘滞 → 满槽拒绝 → 空槽填补 →
+# 粘滞被W打破 → P→C转换 → 槽位稳定性（沉默重连回原槽）→ 清场
+# 注意：需要在无其他活跃 session 的环境下运行
+COMPREHENSIVE_STICKY_SLOT_SEQUENCE = [
+    # ===== Phase 1: 5 sessions 填满所有槽位 =====
+    *[
+        (f"S{i}: UserPromptSubmit", "UserPromptSubmit.json", {
+            "session_id": f"comp-0000-0000-0000-00000000000{i}",
+            "cwd": f"G:\\comp\\proj_{i}", "prompt": f"comprehensive phase1 S{i}"
+        })
+        for i in range(1, 6)
+    ],
+    *[
+        (f"S{i}: PreToolUse(Read)", "PreToolUse.json", {
+            "session_id": f"comp-0000-0000-0000-00000000000{i}",
+            "cwd": f"G:\\comp\\proj_{i}", "tool_name": "Read",
+            "tool_use_id": f"toolu_CS_R{i}", "tool_input": {"file_path": "main.py"}
+        })
+        for i in range(1, 6)
+    ],
+    # [期望] 5 dot 全蓝(W), 5 tab 全蓝, dominant=W, logo=蓝
+    ("WAIT 2s: Phase1 5槽全满W", None, {"sleep": 2}),
+
+    # ===== Phase 2: 混合状态 — C/P/E/C/C =====
+    # S1: Stop → C
+    ("S1: PostToolUse→C", "PostToolUse.json", {
+        "session_id": "comp-0000-0000-0000-000000000001",
+        "cwd": "G:\\comp\\proj_1", "tool_name": "Read",
+        "tool_use_id": "toolu_CS_R1", "tool_response": {"interrupted": False}
+    }),
+    ("S1: Stop", "Stop.json", {
+        "session_id": "comp-0000-0000-0000-000000000001", "cwd": "G:\\comp\\proj_1"
+    }),
+    # [期望] dot[0]=绿(C), dominant=C
+
+    # S2: Notification → P
+    ("S2: Notification→P", "Notification.json", {
+        "session_id": "comp-0000-0000-0000-000000000002",
+        "notification_type": "permission_prompt"
+    }),
+    # [期望] dot[1]=紫(P), dominant=P (P > C)
+
+    # S3: Stop → C
+    ("S3: PostToolUse→C", "PostToolUse.json", {
+        "session_id": "comp-0000-0000-0000-000000000003",
+        "cwd": "G:\\comp\\proj_3", "tool_name": "Read",
+        "tool_use_id": "toolu_CS_R3", "tool_response": {"interrupted": False}
+    }),
+    ("S3: Stop", "Stop.json", {
+        "session_id": "comp-0000-0000-0000-000000000003", "cwd": "G:\\comp\\proj_3"
+    }),
+    # [期望] dot[2]=绿(C), dominant=P
+
+    # S4: PostToolUseFailure → E
+    ("S4: PostToolUseFailure→E", "PostToolUseFailure.json", {
+        "session_id": "comp-0000-0000-0000-000000000004",
+        "cwd": "G:\\comp\\proj_4", "tool_name": "Read",
+        "tool_use_id": "toolu_CS_R4", "error": "connection timeout"
+    }),
+    # [期望] dot[3]=红(E), dominant=E (E > P)
+
+    # S5: Stop → C
+    ("S5: PostToolUse→C", "PostToolUse.json", {
+        "session_id": "comp-0000-0000-0000-000000000005",
+        "cwd": "G:\\comp\\proj_5", "tool_name": "Read",
+        "tool_use_id": "toolu_CS_R5", "tool_response": {"interrupted": False}
+    }),
+    ("S5: Stop", "Stop.json", {
+        "session_id": "comp-0000-0000-0000-000000000005", "cwd": "G:\\comp\\proj_5"
+    }),
+    # [期望] dot[4]=绿(C), dominant=E
+    # 状态矩阵: slot[0]=C slot[1]=P slot[2]=C slot[3]=E slot[4]=C  dominant=E
+    ("WAIT 1s: Phase2 混合状态E/P/C", None, {"sleep": 1}),
+
+    # ===== Phase 3: 满槽拒绝（在session被清理前立刻发S6）=====
+    # S6(新session) → 5槽全满 → _find_empty()→None → skip
+    ("S6: UserPromptSubmit(满槽→跳过)", "UserPromptSubmit.json", {
+        "session_id": "comp-0000-0000-0000-000000000006",
+        "cwd": "G:\\comp\\proj_6", "prompt": "should be skipped - all slots full"
+    }),
+    ("S6: PreToolUse(skipped)", "PreToolUse.json", {
+        "session_id": "comp-0000-0000-0000-000000000006",
+        "cwd": "G:\\comp\\proj_6", "tool_name": "Bash",
+        "tool_use_id": "toolu_CS_B6", "tool_input": {"command": "echo skipped"}
+    }),
+    # [期望] S6不出现, 5dot颜色不变, log含"all slots full, session skipped"
+
+    # ===== Phase 4: 粘滞验证 + E过期 =====
+    # 等待 daemon 推 I → C/P 应粘滞保持；S4的E在dizzy_until(3s)后变I
+    ("WAIT 3s: daemon推I, C/P粘滞生效", None, {"sleep": 3}),
+    # [期望] dot[0]=绿(C粘滞), dot[1]=紫(P粘滞), dot[2]=绿(C粘滞), dot[4]=绿(C粘滞)
+    #        dot[3]=灰(I)（E不粘滞）, dominant=P (P粘滞 > C)
+    #        日志含 "sticky dominant: raw=I -> P" 或 "sticky dot"
+    ("WAIT 2s: 粘滞持续观察", None, {"sleep": 2}),
+
+    # ===== Phase 5: 空槽填补 + 粘滞打破 =====
+    # S4的E已过期→I, daemon清理清除S4 → slot[3]释放
+    ("WAIT 8s: S4从wire清除, slot[3]释放", None, {"sleep": 8}),
+
+    # S7 → 填入空slot[3]
+    ("S7: UserPromptSubmit(填空槽3)", "UserPromptSubmit.json", {
+        "session_id": "comp-0000-0000-0000-000000000007",
+        "cwd": "G:\\comp\\proj_7", "prompt": "fill vacated slot 3"
+    }),
+    ("S7: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "comp-0000-0000-0000-000000000007",
+        "cwd": "G:\\comp\\proj_7", "tool_name": "Bash",
+        "tool_use_id": "toolu_CS_B7", "tool_input": {"command": "echo slot3_filled"}
+    }),
+    # [期望] dot[3]=蓝(W), dominant=W (W打破P粘滞!), logo从紫变蓝
+    ("WAIT 1s: W打破P粘滞观察", None, {"sleep": 1}),
+
+    # S2: Stop → P变C（审批完成）
+    ("S2: Stop(审批完成→C)", "Stop.json", {
+        "session_id": "comp-0000-0000-0000-000000000002", "cwd": "G:\\comp\\proj_2"
+    }),
+    # [期望] dot[1]=绿(C), dominant=W (S7仍是W)
+    ("WAIT 2s: P→C转换观察", None, {"sleep": 2}),
+
+    # ===== Phase 6: 槽位稳定性（沉默→重连→回原槽）=====
+    # S7 Stop → C
+    ("S7: PostToolUse→Stop", "PostToolUse.json", {
+        "session_id": "comp-0000-0000-0000-000000000007",
+        "cwd": "G:\\comp\\proj_7", "tool_name": "Bash",
+        "tool_use_id": "toolu_CS_B7", "tool_response": {"interrupted": False}
+    }),
+    ("S7: Stop", "Stop.json", {
+        "session_id": "comp-0000-0000-0000-000000000007", "cwd": "G:\\comp\\proj_7"
+    }),
+    # [期望] dot[3]=绿(C)
+    ("WAIT 12s: S7从daemon清理, slot[3]释放", None, {"sleep": 12}),
+
+    # S7重连 → 应回slot[3]
+    ("S7: 重连→槽位稳定性验证", "UserPromptSubmit.json", {
+        "session_id": "comp-0000-0000-0000-000000000007",
+        "cwd": "G:\\comp\\proj_7", "prompt": "reconnect - should be slot 3"
+    }),
+    ("S7: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "comp-0000-0000-0000-000000000007",
+        "cwd": "G:\\comp\\proj_7", "tool_name": "Read",
+        "tool_use_id": "toolu_CS_R7b", "tool_input": {"file_path": "test.py"}
+    }),
+    # [期望] S7回到slot[3](W,蓝) ← v6槽位稳定!
+    ("WAIT 2s: 槽位稳定性确认(回slot[3])", None, {"sleep": 2}),
+
+    # ===== Phase 7: 全部清场 =====
+    ("WAIT 13s: 全部session超时清除", None, {"sleep": 13}),
+    # [期望] 所有slot释放, dominant=I, logo=灰, 5dot全灰
+]
+
 # ── v6 满槽淘汰序列 ───────────────────────────────────────
 # 验证 5 槽全满时第 6 个 session 触发 slot 0 淘汰
 V6_SLOT_OVERFLOW_SEQUENCE = [
@@ -2014,6 +2165,8 @@ def main():
     parser.add_argument("--v6-slot-overflow", action="store_true", help="v6 满槽淘汰测试（第6个session触发淘汰）")
     parser.add_argument("--v6-comprehensive", action="store_true", help="v6 15 session 综合压力测试")
     parser.add_argument("--sticky-state", action="store_true", help="C/P 粘滞状态测试")
+    parser.add_argument("--comprehensive-sticky-slot", action="store_true",
+                        help="综合测试：粘滞+槽位稳定性+满槽+混合状态（需纯净环境）")
     parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
                         help="跳过序列结束后的 session 清除等待")
@@ -2116,6 +2269,8 @@ def main():
         sequence, test_name = V6_COMPREHENSIVE_SEQUENCE, "v6 15 session 综合压力测试"
     elif args.sticky_state:
         sequence, test_name = STICKY_STATE_SEQUENCE, "C/P 粘滞状态测试"
+    elif args.comprehensive_sticky_slot:
+        sequence, test_name = COMPREHENSIVE_STICKY_SLOT_SEQUENCE, "综合：粘滞+槽位+满槽+混合状态"
     else:
         sequence, test_name = BASIC_SEQUENCE, "基本功能测试"
 
