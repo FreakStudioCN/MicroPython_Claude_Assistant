@@ -475,7 +475,7 @@ def main():
        CHARACTER = "kirby"   # claude/cat/robot/ghost/among_us/creeper/kirby/pikachu
   2. 重新运行烧录命令，脚本自动读取并只上传对应角色文件
 
-切换语音音色（clock 形态）：
+切换语音音色：
   1. 运行 python scripts/gen_voice_assets.py 生成新 PCM 文件
   2. 文件自动保存到 device/assets/，重新烧录时一并上传
 

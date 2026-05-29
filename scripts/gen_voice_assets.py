@@ -1,6 +1,6 @@
 # coding: utf-8
 """
-gen_voice_assets.py — PC端批量生成闹钟语音PCM文件
+gen_voice_assets.py — PC端批量生成设备语音PCM文件
 用法: python gen_voice_assets.py
 依赖: pip install websockets
 """
@@ -565,14 +565,17 @@ _EMOTION_LABELS = [
 _EMOTIONS       = [label for label, _ in _EMOTION_LABELS]
 _EMOTION_BY_DISP = {label: val for label, val in _EMOTION_LABELS}
 
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
+class App(tk.Toplevel):
+    def __init__(self, master=None):
+        super().__init__(master)
         self.title("豆包语音PCM生成器")
         self.resizable(False, False)
         self._pcm = None
         self._pcm_rate = 16000
+        if master:
+            self.transient(master)
         self._build()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def _build(self):
         pad = dict(padx=6, pady=3)
@@ -799,7 +802,11 @@ class App(tk.Tk):
 if __name__ == "__main__":
     import sys
     if "--gui" in sys.argv or len(sys.argv) == 1:
-        App().mainloop()
+        root = tk.Tk()
+        root.withdraw()
+        app = App(root)
+        root.wait_window(app)
+        root.destroy()
     else:
         asyncio.run(main(auto="--auto" in sys.argv))
 

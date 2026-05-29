@@ -125,6 +125,9 @@ class DisplayRenderer:
         self._voice       = VoiceTask()
         self._prev_states = {}
         self._history     = []
+        self._disconnect_loop     = False
+        self._work_speak_deadline = 0
+        self._idle_speak_deadline = 0
 
         # 槽位名记录（用于检测 session 变化）
         self._slot_names = [""] * MAX_SESSIONS
@@ -138,6 +141,7 @@ class DisplayRenderer:
         print("[renderer] hardware OK, building UI...")
         self._build_ui()
         print("[renderer] UI built")
+        asyncio.create_task(self._voice.trigger([], None, "startup", force=True))
 
     def _init_hardware(self):
         spi_bus = machine.SPI.Bus(
@@ -508,6 +512,16 @@ class DisplayRenderer:
 
         self._update_main()
 
+        # 偶发播报
+        now = time.time()
+        dom = dominant_state(self._sessions)
+        if dom == S_WORKING and now >= self._work_speak_deadline:
+            await self._voice.maybe_idle_speak(self._history)
+            self._work_speak_deadline = self._next_work_deadline()
+        elif dom == S_IDLE and now >= self._idle_speak_deadline:
+            await self._voice.maybe_idle_speak(self._history, "idle")
+            self._idle_speak_deadline = self._next_idle_deadline()
+
         # 延后写入 _prev_states，确保 _update_main() 中圆点粘滞判断拿到旧值
         for name, cur in pending.items():
             self._prev_states[name] = cur
@@ -515,7 +529,10 @@ class DisplayRenderer:
     async def on_connect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_ON, lv.PART.MAIN)
         _log.info("connected")
+        self._disconnect_loop = False
         self._prev_states.clear()
+        self._work_speak_deadline = self._next_work_deadline()
+        self._idle_speak_deadline = self._next_idle_deadline()
         asyncio.create_task(self._voice.trigger([], None, "connect", force=True))
 
     async def on_disconnect(self):
@@ -526,6 +543,8 @@ class DisplayRenderer:
         self._prev_states.clear()
         self._last_sticky_dot_count = 0
         self._update_main()
+        self._disconnect_loop = True
+        asyncio.create_task(self._disconnect_speak_loop())
 
     # ── 主界面更新 ────────────────────────────────────────────
 
@@ -711,3 +730,26 @@ class DisplayRenderer:
         })
         if len(self._history) > cfg.VOICE_HISTORY_DEPTH:
             self._history.pop(0)
+
+    # ── 断联语音 ────────────────────────────────────────────────
+
+    async def _disconnect_speak_loop(self):
+        count = 0
+        while self._disconnect_loop and count < 3:
+            await self._voice.trigger([], None, "disconnect")
+            count += 1
+            await asyncio.sleep(10)
+
+    # ── 偶发播报 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _next_work_deadline() -> int:
+        import urandom
+        span = cfg.VOICE_WORK_MAX_S - cfg.VOICE_WORK_MIN_S
+        return time.time() + cfg.VOICE_WORK_MIN_S + (urandom.getrandbits(8) * span // 256)
+
+    @staticmethod
+    def _next_idle_deadline() -> int:
+        import urandom
+        span = cfg.VOICE_IDLE_MAX_S - cfg.VOICE_IDLE_MIN_S
+        return time.time() + cfg.VOICE_IDLE_MIN_S + (urandom.getrandbits(8) * span // 256)
