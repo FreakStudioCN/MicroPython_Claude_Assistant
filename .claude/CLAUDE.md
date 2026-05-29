@@ -32,7 +32,7 @@
 - `device/config.py` 中的 `VARIANT` 和 `BLE_NAME` 两个字段由 `scripts/flash_device.py` 烧录时自动注入，**不要手动修改这两个字段**；其余常量（引脚、灯光参数等）可以手动修改
 - `device/config.py` 中的 `LOG_ENABLE`、`LOG_MAX_FILES`、`LOG_LINES_PER_FILE` 可按需调整（日志开关与轮转参数）
 - `device/assets/` 下的 PCM 文件是 `gen_voice_assets.py` 的生成产物，不要手动编辑
-- 用户自定义入口：语音音色 → `gen_voice_assets.py`；面板角色 → `device/character.py`；Logo → `scripts/logo_converter.py`；行为参数 → `device/config.py`
+- 用户自定义入口：语音音色 → `gen_voice_assets.py`；面板角色 → `/create-character` skill（推荐）或 `device/character.py`；Logo → `scripts/logo_converter.py`；行为参数 → `device/config.py`
 
 ## v6 协议（当前版本）
 
@@ -99,12 +99,12 @@ daemon 以 `--tcp-device` 模式连接 PC 端 `sim_device`，日志统一在 `sc
 
 **需要三个终端分别启动（顺序不可错）：**
 
-终端 1（先启动 sim_device，等它监听 TCP）：
+终端 1（先启动 sim_device，它会循环重试连接 daemon:57321）：
 ```
 python -m scripts.sim_device
 ```
 
-终端 2（sim_device 就绪后启动 daemon）：
+终端 2（sim_device 启动后启动 daemon，sim_device 会自行重连）：
 ```
 python daemon/ble_daemon.py --tcp-device
 ```
@@ -122,16 +122,23 @@ python scripts/read_sim_log.py --tail 50  # 只看最后50行
 
 #### C/P 粘滞状态测试（sim_device）
 
-验证粘滞逻辑，需要在无其他活跃 session 的纯净环境下运行：
+验证粘滞逻辑。**注意：Claude Code 自身运行测试命令也会创建 session（terminal-1.1 始终 W），因此 global dominant 级粘滞（`sticky dominant`、`sticky msg`）在 CC 运行时无法触发——这属于正常现象。** 可验证的是 per-dot/slot 级粘滞行为：
 
-1. **关闭所有 Claude Code 窗口**（避免真实 session 干扰）
+1. **关闭所有 Claude Code 窗口**（减少干扰，但正在运行测试的 CC 自身仍会产生 session）
 2. 按上述三终端流程启动 sim_device + daemon
 3. 终端 3 运行：`python scripts/sim_hooks_v5.py --no-daemon --skip-ble-check --sticky-state`
 4. 观察终端 1（sim_device）的实时输出：
-   - 标题行 `dominant:` 显示当前聚合状态
-   - `[sticky]` 行表示粘滞生效（无活跃 session 但保持上次状态）
-5. 读日志验证：`python scripts/read_sim_log.py --tail 80 | grep -E "dominant|sticky"`
-   - 查找 `dominant: C -> I (sticky=True)` 或 `dominant: P -> I (sticky=True)` 确认粘滞触发
+   - 标题行 `dominant:` 显示当前聚合状态（通常为 W，因为 CC 自身 session 活跃）
+   - 各 slot 行颜色变化反映 per-dot 粘滞
+5. 读日志验证：
+   ```
+   python scripts/read_sim_log.py --tail 80 | grep -E "sticky (dot|hold|broken|dominant|msg)"
+   ```
+   - `sticky dot[N] ... raw=I prev=C -> sticky=C` — per-dot 粘滞生效
+   - `sticky hold: N empty dot(s) kept at dominant=P` — 空槽粘滞保持
+   - `sticky broken: ... -> ... (sticky was holding ...)` — W/E 打破粘滞
+   - `sticky dominant: raw=I -> C (keep C against I)` — global 粘滞（需纯净环境）
+   - `sticky msg: show ... as ... (all sessions gone, sticky hold)` — 消息块粘滞（需纯净环境）
 
 ## 日志规范
 
