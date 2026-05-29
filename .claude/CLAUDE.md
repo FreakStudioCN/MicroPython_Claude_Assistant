@@ -79,14 +79,39 @@
 
 **注意：** BLE（测试通信）和 USB 串口（mpremote 读日志）不冲突，可同时使用。
 
+#### C/P 粘滞状态测试（真机）
+
+验证 C/P 状态不被 I 立刻覆盖，需要在无其他活跃 session 的纯净环境下运行：
+
+1. **关闭所有 Claude Code 窗口**（避免真实 session 干扰）
+2. 启动 daemon：`python daemon/ble_daemon.py`
+3. 运行粘滞测试：`python scripts/sim_hooks_v5.py --no-daemon --sticky-state`
+4. 观察 ESP32 屏幕 logo 颜色变化：
+   - **场景 1（C 粘滞）**：Stop 后 logo 变绿（C），2 秒后 daemon 推 I，logo 应保持绿色不变灰（粘滞 5s）
+   - **场景 2（C 粘滞解除）**：粘滞 C 期间新任务到来，logo 从绿变蓝（W）
+   - **场景 3（P 粘滞）**：审批通知后 logo 变紫（P），Stop 后变绿（C），daemon 推 I 后应保持绿色（粘滞）
+
 ### 场景二：模拟设备（PC 端 sim_device，无需 ESP32）
 
 daemon 以 `--tcp-device` 模式连接 PC 端 `sim_device`，日志统一在 `scripts/sim_device/logs/`：
 - `scripts/sim_device/logs/daemon.log`：daemon 日志（`--tcp-device` 时自动写此路径）
 - `scripts/sim_device/logs/sim_device_N.log`：sim_device 轮转日志（N=0~3）
 
+**需要三个终端分别启动（顺序不可错）：**
+
+终端 1（先启动 sim_device，等它监听 TCP）：
 ```
-python scripts/sim_hooks_v5.py --stub --skip-ble-check
+python -m scripts.sim_device
+```
+
+终端 2（sim_device 就绪后启动 daemon）：
+```
+python daemon/ble_daemon.py --tcp-device
+```
+
+终端 3（daemon 就绪后发送测试事件）：
+```
+python scripts/sim_hooks_v5.py --no-daemon --skip-ble-check
 ```
 
 运行完毕后直接读日志文件分析：
@@ -94,6 +119,19 @@ python scripts/sim_hooks_v5.py --stub --skip-ble-check
 python scripts/read_sim_log.py        # 读取所有轮转日志（按时间顺序）
 python scripts/read_sim_log.py --tail 50  # 只看最后50行
 ```
+
+#### C/P 粘滞状态测试（sim_device）
+
+验证粘滞逻辑，需要在无其他活跃 session 的纯净环境下运行：
+
+1. **关闭所有 Claude Code 窗口**（避免真实 session 干扰）
+2. 按上述三终端流程启动 sim_device + daemon
+3. 终端 3 运行：`python scripts/sim_hooks_v5.py --no-daemon --skip-ble-check --sticky-state`
+4. 观察终端 1（sim_device）的实时输出：
+   - 标题行 `dominant:` 显示当前聚合状态
+   - `[sticky]` 行表示粘滞生效（无活跃 session 但保持上次状态）
+5. 读日志验证：`python scripts/read_sim_log.py --tail 80 | grep -E "dominant|sticky"`
+   - 查找 `dominant: C -> I (sticky=True)` 或 `dominant: P -> I (sticky=True)` 确认粘滞触发
 
 ## 日志规范
 

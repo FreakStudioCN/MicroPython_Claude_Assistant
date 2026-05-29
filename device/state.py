@@ -79,3 +79,19 @@ def sess_state(sess) -> str:
     if sess.running:    return S_WORKING
     if sess.completed:  return S_DONE
     return S_IDLE
+
+
+def dominant_state(sessions) -> str:
+    """从 session 列表中取优先级最高的状态（E > P > W > C > I）"""
+    states = [sess_state(s) for s in sessions] if sessions else []
+    for s in (S_ERROR, S_PENDING, S_WORKING, S_DONE):
+        if s in states:
+            return s
+    return S_IDLE
+
+
+def sticky_dominant(current, last) -> str:
+    """粘滞守卫：C/P 不被 I 覆盖，等待 W/E 明确到来"""
+    if current == S_IDLE and last in (S_DONE, S_PENDING):
+        return last
+    return current

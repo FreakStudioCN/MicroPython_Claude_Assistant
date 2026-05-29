@@ -1627,6 +1627,114 @@ V6_COMPREHENSIVE_SEQUENCE = [
     # [期望] S7=C, S8=C, S9=E → dominant=E
 ]
 
+# ── C/P 粘滞测试序列 ─────────────────────────────────────
+# 验证：C 状态不被 I 立刻覆盖；P 状态不被 I 立刻覆盖；粘滞被新 W 正确解除
+# 注意：本测试需要在无其他活跃 session 的环境下运行（关闭所有 Claude Code 窗口）
+STICKY_STATE_SEQUENCE = [
+    # === 场景 1：C 粘滞（单 session 纯净环境）===
+    # W → Stop(→C 2s) → daemon 推 I → [期望 dominant 粘滞保持 C]
+    ("sticky-C: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000001",
+        "cwd": "G:\\sticky_c", "prompt": "sticky C test"
+    }),
+    ("sticky-C: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000001",
+        "cwd": "G:\\sticky_c", "tool_name": "Read",
+        "tool_use_id": "toolu_SC_R1", "tool_input": {"file_path": "main.py"}
+    }),
+    # [期望] slot[0]=W, dominant=W, logo=蓝色
+    ("sticky-C: PostToolUse(Read)", "PostToolUse.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000001",
+        "cwd": "G:\\sticky_c", "tool_name": "Read",
+        "tool_use_id": "toolu_SC_R1", "tool_response": {"interrupted": False}
+    }),
+    ("sticky-C: Stop(→C)", "Stop.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000001",
+        "cwd": "G:\\sticky_c"
+    }),
+    # [期望] slot[0]=C, dominant=C, logo=绿色（C 持续 2s）
+    ("WAIT 1s: C状态观察", None, {"sleep": 1}),
+    # [期望] 1s 后 logo 仍是绿色
+    ("WAIT 2s: daemon推I，粘滞应保持C", None, {"sleep": 2}),
+    # [期望] daemon 推 I 后，dominant 粘滞保持 C，logo 仍是绿色（不变灰）
+    ("WAIT 2s: 粘滞C持续观察", None, {"sleep": 2}),
+    # [期望] logo 仍是绿色
+    ("WAIT 8s: 等待session从wire消失", None, {"sleep": 8}),
+    # [期望] slot[0] 释放，dominant=I（无粘滞），logo=灰色
+
+    # === 场景 2：C 粘滞被新 W 解除 ===
+    ("sticky-C-release: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000002",
+        "cwd": "G:\\sticky_c2", "prompt": "task 1"
+    }),
+    ("sticky-C-release: PreToolUse(Bash)", "PreToolUse.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000002",
+        "cwd": "G:\\sticky_c2", "tool_name": "Bash",
+        "tool_use_id": "toolu_SC_B2", "tool_input": {"command": "echo task1"}
+    }),
+    ("sticky-C-release: PostToolUse(Bash)", "PostToolUse.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000002",
+        "cwd": "G:\\sticky_c2", "tool_name": "Bash",
+        "tool_use_id": "toolu_SC_B2", "tool_response": {"interrupted": False}
+    }),
+    ("sticky-C-release: Stop(→C)", "Stop.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000002",
+        "cwd": "G:\\sticky_c2"
+    }),
+    # [期望] dominant=C, logo=绿色
+    ("WAIT 3s: C粘滞生效", None, {"sleep": 3}),
+    # [期望] logo 仍是绿色（粘滞中）
+    # 新任务到来，应解除粘滞
+    ("sticky-C-release: 新任务到来", "UserPromptSubmit.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000003",
+        "cwd": "G:\\sticky_c3", "prompt": "new task releases sticky"
+    }),
+    ("sticky-C-release: PreToolUse(Read)", "PreToolUse.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000003",
+        "cwd": "G:\\sticky_c3", "tool_name": "Read",
+        "tool_use_id": "toolu_SC_R3", "tool_input": {"file_path": "test.py"}
+    }),
+    # [期望] dominant=W（粘滞被 W 解除），logo=蓝色
+    ("sticky-C-release: PostToolUse", "PostToolUse.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000003",
+        "cwd": "G:\\sticky_c3", "tool_name": "Read",
+        "tool_use_id": "toolu_SC_R3", "tool_response": {"interrupted": False}
+    }),
+    ("sticky-C-release: Stop", "Stop.json", {
+        "session_id": "sticky-c-0000-0000-0000-000000000003",
+        "cwd": "G:\\sticky_c3"
+    }),
+    ("WAIT 12s: 清场", None, {"sleep": 12}),
+
+    # === 场景 3：P 粘滞 ===
+    ("sticky-P: UserPromptSubmit", "UserPromptSubmit.json", {
+        "session_id": "sticky-p-0000-0000-0000-000000000004",
+        "cwd": "G:\\sticky_p", "prompt": "sticky P test"
+    }),
+    ("sticky-P: PreToolUse(Bash-risky)", "PreToolUse.json", {
+        "session_id": "sticky-p-0000-0000-0000-000000000004",
+        "cwd": "G:\\sticky_p", "tool_name": "Bash",
+        "tool_use_id": "toolu_SP_B4", "tool_input": {"command": "rm -rf /important"}
+    }),
+    ("sticky-P: Notification(permission_prompt→P)", "Notification.json", {
+        "session_id": "sticky-p-0000-0000-0000-000000000004",
+        "notification_type": "permission_prompt"
+    }),
+    # [期望] dominant=P, logo=紫色
+    ("WAIT 2s: P状态观察", None, {"sleep": 2}),
+    # [期望] logo 仍是紫色
+    # Stop 清零 waiting → C
+    ("sticky-P: Stop(审批完成→C)", "Stop.json", {
+        "session_id": "sticky-p-0000-0000-0000-000000000004",
+        "cwd": "G:\\sticky_p"
+    }),
+    # [期望] dominant=C, logo=绿色
+    ("WAIT 3s: daemon推I，粘滞应保持C", None, {"sleep": 3}),
+    # [期望] daemon 推 I 后，dominant 粘滞保持 C，logo 仍是绿色
+    ("WAIT 2s: 粘滞C持续观察", None, {"sleep": 2}),
+    # [期望] logo 仍是绿色
+]
+
 # ── v6 满槽淘汰序列 ───────────────────────────────────────
 # 验证 5 槽全满时第 6 个 session 触发 slot 0 淘汰
 V6_SLOT_OVERFLOW_SEQUENCE = [
@@ -1801,7 +1909,7 @@ def _run_sequence(sequence, test_name, no_cooldown):
     print(f"{'─'*60}")
     slow_count = 0
     # 长消息测试使用更长间隔，便于观察跑马灯滚动
-    default_interval = 2.5 if "长消息" in test_name else (7.0 if "闹钟" in test_name else 0.5)
+    default_interval = 2.5 if "长消息" in test_name else (7.0 if "闹钟" in test_name else (1.0 if "粘滞" in test_name else 0.5))
     for item in sequence:
         label, filename, patch = item[0], item[1], item[2]
         interval = item[3] if len(item) > 3 else default_interval
@@ -1839,8 +1947,9 @@ def _run_sequence(sequence, test_name, no_cooldown):
         print(f"[sim] OK 所有响应时间正常（< 1s）")
 
     if not no_cooldown:
-        print(f"[sim] 等待 session 清除（11s）...")
-        time.sleep(11)
+        cooldown = 13 if "粘滞" in test_name else 11
+        print(f"[sim] 等待 session 清除（{cooldown}s）...")
+        time.sleep(cooldown)
     return slow_count
 
 
@@ -1904,6 +2013,7 @@ def main():
     parser.add_argument("--v6-same-cwd-multi", action="store_true", help="v6 同cwd多窗口测试（不同SID各占独立槽）")
     parser.add_argument("--v6-slot-overflow", action="store_true", help="v6 满槽淘汰测试（第6个session触发淘汰）")
     parser.add_argument("--v6-comprehensive", action="store_true", help="v6 15 session 综合压力测试")
+    parser.add_argument("--sticky-state", action="store_true", help="C/P 粘滞状态测试")
     parser.add_argument("--all", action="store_true", help="运行全部序列（约 6 分钟）")
     parser.add_argument("--no-cooldown", action="store_true",
                         help="跳过序列结束后的 session 清除等待")
@@ -2004,6 +2114,8 @@ def main():
         sequence, test_name = V6_SLOT_OVERFLOW_SEQUENCE, "v6 满槽淘汰测试"
     elif args.v6_comprehensive:
         sequence, test_name = V6_COMPREHENSIVE_SEQUENCE, "v6 15 session 综合压力测试"
+    elif args.sticky_state:
+        sequence, test_name = STICKY_STATE_SEQUENCE, "C/P 粘滞状态测试"
     else:
         sequence, test_name = BASIC_SEQUENCE, "基本功能测试"
 

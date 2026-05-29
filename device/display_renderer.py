@@ -24,7 +24,7 @@ from micropython import const
 import config as cfg
 _char_mod = __import__("char_" + cfg.CHARACTER) if cfg.CHARACTER != "claude" else None
 _CharClass = getattr(_char_mod, "".join(w[0].upper() + w[1:] for w in cfg.CHARACTER.split("_")) + "Character") if _char_mod else __import__("character").ClaudeCharacter
-from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR
+from state import sess_state as _sess_state, S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR, dominant_state, sticky_dominant
 from voice_task import VoiceTask
 from session_manager import SessionManager
 import logging
@@ -33,6 +33,7 @@ _log = logging.getLogger("display")
 # ── 颜色常量 ──────────────────────────────────────────────────
 _C_TAB_IDLE  = lv.color_hex(0xCCCCCC)
 _C_TAB_WORK  = lv.color_hex(0x2196F3)
+_C_TAB_PEND  = lv.color_hex(0xFFC107)
 _C_TAB_ERR   = lv.color_hex(0xF44336)
 _C_TAB_ERR2  = lv.color_hex(0xC62828)
 _C_TAB_CELE  = lv.color_hex(0x4CAF50)
@@ -78,14 +79,6 @@ _BLOCK_COLORS = {S_WORKING: _C_BG_NORMAL, S_ERROR: _C_BG_ERROR, S_DONE: _C_BG_SU
 _STATE_LABELS = {S_WORKING: "Working", S_ERROR: "Error", S_DONE: "Done", S_IDLE: "Idle", S_PENDING: "Pending"}
 _STATE_LABEL_ZH = {S_IDLE: "空闲", S_WORKING: "工作中", S_PENDING: "等待审批", S_DONE: "完成", S_ERROR: "出错"}
 
-def _dominant_state(sessions) -> str:
-    states = [_sess_state(s) for s in sessions] if sessions else []
-    for s in (S_ERROR, S_PENDING, S_WORKING, S_DONE):
-        if s in states:
-            return s
-    return S_IDLE
-
-
 class DisplayRenderer:
     """LVGL 屏幕渲染器：主界面 + Sessions + Config 三个面板"""
 
@@ -123,7 +116,9 @@ class DisplayRenderer:
 
         # 共享
         self._sessions  = []
+        self._ordered   = [None] * MAX_SESSIONS
         self._disp      = None
+        self._last_active_sess = None
 
         # 语音
         self._voice       = VoiceTask()
@@ -485,6 +480,7 @@ class DisplayRenderer:
         # v6 协议：SessionManager 处理 slot 映射
         assigned, cleared, ordered = self._sm.update(msg.sessions)
 
+        pending = {}
         for slot_index, sess in assigned:
             # 更新槽位
             self._update_tab(slot_index, sess)
@@ -497,16 +493,23 @@ class DisplayRenderer:
                 self._push_voice_history(sess, cur)
                 if cur in (S_DONE, S_ERROR, S_PENDING):
                     await self._voice.trigger(self._history, sess, cur)
-                self._prev_states[sess.name] = cur
+                pending[sess.name] = cur
 
-        # 清空未更新的槽
-        for slot_index in cleared:
-            self._update_tab(slot_index, None)
+        # 清空未更新的槽（全部清空时跳过，避免粘滞中圆点被刷灰）
+        if len(cleared) < MAX_SESSIONS:
+            for slot_index in cleared:
+                self._update_tab(slot_index, None)
 
-        # 更新 self._sessions 为按槽位顺序的列表（供 _update_main 使用）
+        # self._ordered 保留完整槽位映射（含 None），供圆点按位置索引
+        # self._sessions 压缩掉 None，供 dominant_state 和消息块遍历
+        self._ordered = ordered
         self._sessions = [s for s in ordered if s is not None]
 
         self._update_main()
+
+        # 延后写入 _prev_states，确保 _update_main() 中圆点粘滞判断拿到旧值
+        for name, cur in pending.items():
+            self._prev_states[name] = cur
 
     async def on_connect(self):
         self._ble_dot.set_style_bg_color(_C_BLE_ON, lv.PART.MAIN)
@@ -518,13 +521,14 @@ class DisplayRenderer:
         self._ble_dot.set_style_bg_color(_C_BLE_OFF, lv.PART.MAIN)
         _log.info("disconnected")
         self._sessions = []
+        self._ordered = [None] * MAX_SESSIONS
         self._prev_states.clear()
         self._update_main()
 
     # ── 主界面更新 ────────────────────────────────────────────
 
     def _update_main(self):
-        state = _dominant_state(self._sessions)
+        state = sticky_dominant(dominant_state(self._sessions), self._logo_state)
 
         # Logo 动画状态
         if state != self._logo_state:
@@ -532,10 +536,17 @@ class DisplayRenderer:
             self._logo_state = state
             self._logo_frame = 0
 
-        # session 圆点
+        # session 圆点：按槽位位置取 self._ordered，保持 dot[i] ↔ slot[i] 对应
         for i, dot in enumerate(self._session_dots):
-            s = _sess_state(self._sessions[i]) if i < len(self._sessions) else S_IDLE
-            dot.set_style_bg_color(_DOT_COLORS[s], lv.PART.MAIN)
+            sess = self._ordered[i] if i < len(self._ordered) else None
+            if sess is not None:
+                s = _sess_state(sess)
+                s = sticky_dominant(s, self._prev_states.get(sess.name))
+                dot.set_style_bg_color(_DOT_COLORS[s], lv.PART.MAIN)
+            elif state in (S_DONE, S_PENDING):
+                continue
+            else:
+                dot.set_style_bg_color(_DOT_COLORS[S_IDLE], lv.PART.MAIN)
 
         # 消息块：取优先级最高的 session
         active_sess = None
@@ -550,9 +561,14 @@ class DisplayRenderer:
                 break
 
         if active_sess:
+            self._last_active_sess = active_sess
             text = active_sess.msg if active_sess.msg else _STATE_LABELS[_sess_state(active_sess)]
             self._msg_label.set_text(f"{active_sess.name}: {text}")
             self._msg_block.set_style_bg_color(_BLOCK_COLORS[_sess_state(active_sess)], lv.PART.MAIN)
+        elif state in (S_DONE, S_PENDING) and self._last_active_sess:
+            sess = self._last_active_sess
+            self._msg_label.set_text(f"{sess.name}: {_STATE_LABELS[state]}")
+            self._msg_block.set_style_bg_color(_BLOCK_COLORS[state], lv.PART.MAIN)
         else:
             self._msg_label.set_text("Idle")
             self._msg_block.set_style_bg_color(_C_BG_IDLE, lv.PART.MAIN)
@@ -591,7 +607,8 @@ class DisplayRenderer:
             _log.info("slot[%d] session changed: %s", index, sess.name)
 
         state     = _sess_state(sess)
-        color_map = {S_ERROR: _C_TAB_ERR, S_WORKING: _C_TAB_WORK, S_DONE: _C_TAB_CELE}
+        state     = sticky_dominant(state, self._prev_states.get(sess.name))
+        color_map = {S_ERROR: _C_TAB_ERR, S_WORKING: _C_TAB_WORK, S_PENDING: _C_TAB_PEND, S_DONE: _C_TAB_CELE}
         btn.set_style_bg_color(color_map.get(state, _C_TAB_IDLE), lv.PART.MAIN)
         lbl.set_text(sess.name)
         if state == S_ERROR:
