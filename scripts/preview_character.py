@@ -100,7 +100,7 @@ from char_creeper   import CreeperCharacter   # noqa: E402
 from char_kirby     import KirbyCharacter     # noqa: E402
 from char_pikachu   import PikachuCharacter   # noqa: E402
 
-ALL_CHARS = {
+ALL_CHARS: dict[str, type] = {
     'claude':   ClaudeCharacter,
     'cat':      CatCharacter,
     'robot':    RobotCharacter,
@@ -110,6 +110,39 @@ ALL_CHARS = {
     'kirby':    KirbyCharacter,
     'pikachu':  PikachuCharacter,
 }
+
+
+def load_custom_char(py_path: str) -> tuple[str, type]:
+    """从 .py 文件动态导入自定义角色，返回 (name, class)。"""
+    name = os.path.splitext(os.path.basename(py_path))[0]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, py_path)
+    if not spec or not spec.loader:
+        raise ImportError(f"无法加载 {py_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # 查找角色类：限定在 mod 自身定义的类（排除 from ... import 的基类）
+    candidates = []
+    for attr in dir(mod):
+        cls = getattr(mod, attr)
+        if not isinstance(cls, type):
+            continue
+        # 只查找本模块定义的类（排除 import 进来的基类 Character 等）
+        if getattr(cls, '__module__', None) != mod.__name__:
+            continue
+        if issubclass(cls, ClaudeCharacter):
+            return name, cls
+        if hasattr(cls, 'build') and hasattr(cls, 'tick'):
+            candidates.append(cls)
+    if candidates:
+        return name, candidates[0]
+    raise ValueError(
+        f"{py_path} 中未找到有效的角色类。\n\n"
+        f"角色类需满足以下条件之一：\n"
+        f"  1. 继承 ClaudeCharacter（推荐）\n"
+        f"  2. 包含 build() 和 tick() 方法\n\n"
+        f"请参照 device/character.py 和 device/char_cat.py 的格式。"
+    )
 
 ALL_STATES = [S_IDLE, S_WORKING, S_PENDING, S_DONE, S_ERROR]
 STATE_LABELS = {S_IDLE: 'IDLE', S_WORKING: 'WORK', S_PENDING: 'PEND', S_DONE: 'DONE', S_ERROR: 'ERR'}
@@ -228,17 +261,33 @@ def build_grid(char_names, states, frames_per_state, output_path):
 
 # ── CLI ────────────────────────────────────────────────────────────────────
 
+_SENTINEL = object()  # 用于判断 --char 是否被显式指定
+
+
 def main():
     parser = argparse.ArgumentParser(description='预览预设角色（无需设备）')
     parser.add_argument('-o', '--output', default='preview.png', help='输出图片路径')
-    parser.add_argument('--char', nargs='+', choices=list(ALL_CHARS.keys()),
-                        default=list(ALL_CHARS.keys()), help='要预览的角色（默认全部）')
+    parser.add_argument('--char', nargs='+', default=_SENTINEL,  # noqa: E761
+                        help='要预览的角色（默认全部）')
     parser.add_argument('--state', nargs='+',
                         choices=['I', 'W', 'P', 'C', 'E'],
                         default=None, help='要预览的状态（默认全部）')
     parser.add_argument('--frames', type=int, default=4, choices=range(1, 9),
                         help='每个状态显示几帧（默认 4）')
+    parser.add_argument('--custom-py', default=None,
+                        help='导入自定义角色 .py 文件')
     args = parser.parse_args()
+
+    if args.custom_py:
+        name, cls = load_custom_char(args.custom_py)
+        ALL_CHARS[name] = cls
+        if args.char is _SENTINEL:
+            # 未显式指定 --char，只渲染自定义角色
+            args.char = [name]
+        print(f"已加载自定义角色: {name}")
+
+    if args.char is _SENTINEL:
+        args.char = list(ALL_CHARS.keys())
 
     state_map = {'I': S_IDLE, 'W': S_WORKING, 'P': S_PENDING, 'C': S_DONE, 'E': S_ERROR}
     states = [state_map[s] for s in args.state] if args.state else ALL_STATES
